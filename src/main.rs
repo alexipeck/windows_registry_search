@@ -16,6 +16,8 @@ static KEY_COUNT: AtomicUsize = AtomicUsize::new(0);
 static VALUE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HKLM: RegKey = RegKey::predef(HKEY_LOCAL_MACHINE);
 
+const REGEDIT_OUTPUT_FOR_BLANK_NAMES: bool = true;
+
 pub struct WorkerManager {
     threads: usize,
     search_terms: Vec<String>,
@@ -73,11 +75,21 @@ impl WorkerManager {
                 Ok((value_name, reg_value)) => {
                     let data = reg_value.to_string();
                     if self.any_string_matches(&value_name, &data) {
+                        let value_name = if value_name.is_empty() {
+                            if REGEDIT_OUTPUT_FOR_BLANK_NAMES {
+                                "(Default)".to_string()
+                            } else {
+                                value_name
+                            }
+                        } else {
+                            value_name
+                        };
                         self.results.lock().insert(format!(
-                            "Name: {}, Type: {:?}, Data: \"{}\"",
+                            "{}\\{} = \"{}\" ({:?})",
+                            key_path,
                             value_name,
+                            data,
                             reg_value.vtype,
-                            data
                         ));
                     }
                 }
