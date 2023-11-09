@@ -26,6 +26,7 @@ pub struct WorkerManager {
     threads_waiting_for_work: Arc<AtomicUsize>,
     no_work_left: Arc<Notify>,
     pub results: Arc<Mutex<HashSet<String>>>,
+    pub errors: Arc<Mutex<HashSet<String>>>,
 }
 
 impl WorkerManager {
@@ -40,6 +41,7 @@ impl WorkerManager {
             no_work_left: Arc::new(Notify::new()),
 
             results: Arc::new(Mutex::new(HashSet::new())),
+            errors: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -48,7 +50,7 @@ impl WorkerManager {
         key_path: &str,
     ) -> Result<(), Box<dyn Error>> {
         if self.string_matches(key_path) {
-            self.results.lock().insert(key_path.to_string());
+            self.results.lock().insert(format!("HKEY_LOCAL_MACHINE\\{}", key_path));
         }
         let registry_key = HKLM.open_subkey_with_flags(key_path, KEY_READ)?;
         {
@@ -60,8 +62,8 @@ impl WorkerManager {
                         let key_path = format!("{}\\{}", key_path, key_name);
                         key_paths.push(key_path);
                     }
-                    Err(_err) => {
-                        //println!("{}", err)
+                    Err(err) => {
+                        self.errors.lock().insert(format!("{}, Subkey error: \"{}\"", key_path, err));
                     },
                 }
             }
@@ -85,7 +87,7 @@ impl WorkerManager {
                             value_name
                         };
                         self.results.lock().insert(format!(
-                            "{}\\{} = \"{}\" ({:?})",
+                            "HKEY_LOCAL_MACHINE\\{}\\{} = \"{}\" ({:?})",
                             key_path,
                             value_name,
                             data,
@@ -93,8 +95,8 @@ impl WorkerManager {
                         ));
                     }
                 }
-                Err(_err) => {
-                    //println!("{}", err)
+                Err(err) => {
+                    self.errors.lock().insert(format!("{}, Value error: \"{}\"", key_path, err));
                 },
             }
         }
@@ -169,8 +171,8 @@ async fn run_thread(worker_manager: Arc<WorkerManager>) {
             Some(key_path) => key_path,
             None => break,
         };
-        if let Err(_err) = worker_manager.feed_queue_and_process_values(&key_path) {
-            //println!("{}", err);
+        if let Err(err) = worker_manager.feed_queue_and_process_values(&key_path) {
+            worker_manager.errors.lock().insert(format!("{}, Key error: \"{}\"", key_path, err));
         }
     }
 }
@@ -183,6 +185,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let start_time = Instant::now();
     worker_manager.run(worker_manager.to_owned()).await;
 
+    eprintln!("Errors:");
+    for error in worker_manager.errors.lock().iter() {
+        eprintln!("{}", error);
+    }
+
+    println!("\nResults:");
     for result in worker_manager.results.lock().iter() {
         println!("{}", result);
     }
