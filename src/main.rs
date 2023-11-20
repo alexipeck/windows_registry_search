@@ -213,7 +213,7 @@ async fn run_thread(worker_manager: Arc<WorkerManager>) {
     }
 }
 
-#[derive(EnumIter)]
+#[derive(EnumIter, Copy, Clone)]
 pub enum Root {
     HkeyClassesRoot = 0,
     HkeyCurrentUser = 1,
@@ -294,7 +294,7 @@ impl SelectedRoots {
         selected_roots
     }
 
-    pub fn is_selected(&self, root: &Root) -> bool {
+    pub fn is_enabled(&self, root: &Root) -> bool {
         match root {
             Root::HkeyClassesRoot => self.classes_root,
             Root::HkeyCurrentUser => self.current_user,
@@ -346,25 +346,29 @@ impl StaticSelection {
         let pane_selected = self.pane_selected.load(Ordering::SeqCst) == 0;
         Root::iter()
             .map(|root| {
-                Spans::from(Span::styled(
-                    format!(
-                        "{:25}{}",
-                        root.to_string(),
-                        if self.selected_roots.read().is_selected(&root) {
-                            "Enabled"
+                let root_enabled = self.selected_roots.read().is_enabled(&root);
+                Spans::from(vec![
+                    Span::styled(
+                        format!("{:25}", root.to_string(),),
+                        Style::default().fg(if pane_selected && root as u8 == root_selected {
+                            Color::Cyan
                         } else {
-                            "Disabled"
-                        }
+                            Color::White
+                        }),
                     ),
-                    Style::default().fg(if pane_selected && root as u8 == root_selected {
-                        Color::Cyan
-                    } else {
-                        Color::White
-                    }),
-                ))
+                    Span::styled(
+                        if root_enabled { "Enabled" } else { "Disabled" },
+                        Style::default().fg(if root_enabled {
+                            Color::Green
+                        } else {
+                            Color::White
+                        }),
+                    ),
+                ])
             })
             .collect::<Vec<Spans>>()
     }
+
     pub fn pane_left(&self) {
         if self.pane_last_changed.lock().elapsed() < DEBOUNCE {
             return;
