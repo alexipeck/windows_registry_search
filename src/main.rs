@@ -37,6 +37,7 @@ use winreg::{enums::*, RegKey};
 
 const DEBOUNCE: Duration = Duration::from_millis(100);
 const EVENT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
+const SELECTION_COLOUR: Color = Color::Cyan;
 
 static KEY_COUNT: AtomicUsize = AtomicUsize::new(0);
 static VALUE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -322,9 +323,11 @@ pub struct StaticSelection {
     root_selected: Arc<AtomicU8>,
     root_selection_last_changed: Arc<Mutex<Instant>>,
 
-    control_selected: Arc<AtomicU8>,
-
     selected_roots: Arc<RwLock<SelectedRoots>>,
+
+    running: Arc<AtomicBool>,
+    run_control_temporarily_disabled: Arc<AtomicBool>, //running thread resets this once closed
+    stop: Arc<AtomicBool>,                             //running thread resets this once closed
 }
 
 impl Default for StaticSelection {
@@ -334,8 +337,10 @@ impl Default for StaticSelection {
             pane_last_changed: Arc::new(Mutex::new(Instant::now())),
             root_selected: Arc::new(AtomicU8::new(0)),
             root_selection_last_changed: Arc::new(Mutex::new(Instant::now())),
-            control_selected: Arc::new(AtomicU8::new(0)),
             selected_roots: Arc::new(RwLock::new(SelectedRoots::default())),
+            running: Arc::new(AtomicBool::new(false)),
+            run_control_temporarily_disabled: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -351,7 +356,7 @@ impl StaticSelection {
                     Span::styled(
                         format!("{:25}", root.to_string(),),
                         Style::default().fg(if pane_selected && root as u8 == root_selected {
-                            Color::Cyan
+                            SELECTION_COLOUR
                         } else {
                             Color::White
                         }),
@@ -435,6 +440,30 @@ impl StaticSelection {
             self.selected_roots.write().toggle(&root);
         }
     }
+
+    pub fn toggle_running(&self) {
+        if self.running.load(Ordering::SeqCst) {
+            self.run_control_temporarily_disabled
+                .store(true, Ordering::SeqCst);
+            self.stop.store(true, Ordering::SeqCst);
+        } else {
+            //TODO: Start the running thing
+            //dummy runtime running for 5 seconds
+            self.run_control_temporarily_disabled
+                .store(true, Ordering::SeqCst);
+            let stop = self.stop.to_owned();
+            let run_control_temporarily_disabled = self.run_control_temporarily_disabled.to_owned();
+            let running = self.running.to_owned();
+            let _ = thread::spawn(move || {
+                running.store(true, Ordering::SeqCst);
+                run_control_temporarily_disabled.store(false, Ordering::SeqCst);
+                thread::sleep(Duration::from_secs(5));
+                stop.store(false, Ordering::SeqCst);
+                running.store(false, Ordering::SeqCst);
+                run_control_temporarily_disabled.store(false, Ordering::SeqCst);
+            });
+        }
+    }
 }
 
 #[tokio::main]
@@ -504,6 +533,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             2 => {}
                             _ => {}
                         },
+                        KeyCode::F(5) => static_menu_selection_event_receiver.toggle_running(),
                         _ => {}
                     }
                 }
@@ -518,6 +548,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         terminal.draw(|f| {
             let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Max(100)].as_ref())
+                .split(f.size());
+            let top_paragraph = Paragraph::new(
+                vec![
+                    "Arrow keys for navigation",
+                    "Enter to select/toggle",
+                    "Page up/down for first/last element",
+                    "F5 Start/Stop",
+                ]
+                .iter()
+                .map(|&tip| format!("[{}] ", tip))
+                .collect::<String>(),
+            )
+            .block(Block::default())
+            .wrap(Wrap { trim: true });
+            f.render_widget(top_paragraph, chunks[0]);
+            let bottom_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .margin(1)
                 .constraints(
@@ -528,7 +576,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     ]
                     .as_ref(),
                 )
-                .split(f.size());
+                .split(chunks[1]);
 
             let pane_selected = static_menu_selection.pane_selected.load(Ordering::SeqCst);
 
@@ -537,32 +585,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .title(Span::styled("Selection", Style::default().fg(Color::White)))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(if pane_selected == 0 {
-                        Color::LightMagenta
+                        SELECTION_COLOUR
                     } else {
                         Color::White
                     })),
             );
-            f.render_widget(left_paragraph, chunks[0]);
+            f.render_widget(left_paragraph, bottom_chunks[0]);
 
-            let controls: Vec<Spans> = vec!["Start", "Stop", "Pause"]
-                .iter()
-                .map(|&control| {
-                    Spans::from(Span::styled(control, Style::default().fg(Color::White)))
-                })
-                .collect();
+            let mut controls: Vec<Spans> = Vec::new();
+            let running = static_menu_selection.running.load(Ordering::SeqCst);
+            let run_control_disabled = static_menu_selection
+                .run_control_temporarily_disabled
+                .load(Ordering::SeqCst);
+            controls.push(Spans::from(Span::styled(
+                if running { "Stop" } else { "Start" },
+                Style::default().fg(if running && !run_control_disabled {
+                    Color::Green
+                } else if running && run_control_disabled {
+                    Color::Red
+                } else {
+                    Color::White
+                }),
+            )));
             let middle_paragraph = Paragraph::new(controls)
                 .block(
                     Block::default()
                         .title(Span::styled("Controls", Style::default().fg(Color::White)))
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(if pane_selected == 1 {
-                            Color::LightMagenta
+                            SELECTION_COLOUR
                         } else {
                             Color::White
                         })),
                 )
                 .wrap(Wrap { trim: true });
-            f.render_widget(middle_paragraph, chunks[1]);
+            f.render_widget(middle_paragraph, bottom_chunks[1]);
 
             let right_text = Text::from("Results will be shown here.");
             let right_paragraph = Paragraph::new(right_text).block(
@@ -570,12 +627,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .title(Span::styled("Results", Style::default().fg(Color::White)))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(if pane_selected == 2 {
-                        Color::LightMagenta
+                        SELECTION_COLOUR
                     } else {
                         Color::White
                     })),
             );
-            f.render_widget(right_paragraph, chunks[2]);
+            f.render_widget(right_paragraph, bottom_chunks[2]);
         })?;
     }
 
