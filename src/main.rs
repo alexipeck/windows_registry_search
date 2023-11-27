@@ -33,6 +33,7 @@ use tui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
 };
+use uuid::Uuid;
 use winreg::{enums::*, RegKey};
 
 const DEBOUNCE: Duration = Duration::from_millis(100);
@@ -317,8 +318,10 @@ impl SelectedRoots {
 }
 
 pub struct StaticSelection {
-    pane_selected: Arc<AtomicU8>,
-    pane_last_changed: Arc<Mutex<Instant>>,
+    pane_selected: Arc<AtomicU8>,           //horizontal
+    pane_last_changed: Arc<Mutex<Instant>>, //horizontal
+    middle_pane_selected: Arc<AtomicU8>,
+    middle_pane_last_changed: Arc<Mutex<Instant>>,
 
     root_selected: Arc<AtomicU8>,
     root_selection_last_changed: Arc<Mutex<Instant>>,
@@ -335,6 +338,8 @@ impl Default for StaticSelection {
         Self {
             pane_selected: Arc::new(AtomicU8::new(0)),
             pane_last_changed: Arc::new(Mutex::new(Instant::now())),
+            middle_pane_selected: Arc::new(AtomicU8::new(0)),
+            middle_pane_last_changed: Arc::new(Mutex::new(Instant::now())),
             root_selected: Arc::new(AtomicU8::new(0)),
             root_selection_last_changed: Arc::new(Mutex::new(Instant::now())),
             selected_roots: Arc::new(RwLock::new(SelectedRoots::default())),
@@ -467,9 +472,55 @@ impl StaticSelection {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum EditorMode {
+    Add,
+    Edit(Uuid),
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchEditor {
+    mode: EditorMode,
+    state: String,
+}
+
+impl SearchEditor {
+    pub fn new_add() -> Self {
+        Self {
+            mode: EditorMode::Add,
+            state: String::new(),
+        }
+    }
+    pub fn new_edit(uid: Uuid, initial_state: String) -> Self {
+        Self {
+            mode: EditorMode::Edit(uid),
+            state: initial_state,
+        }
+    }
+    pub fn add_char(&mut self, ch: char) {
+        self.state.push(ch);
+    }
+    pub fn backspace(&mut self) {
+        let _ = self.state.pop();
+    }
+    pub fn resolve(self) -> (EditorMode, String) {
+        (self.mode, self.state)
+    }
+
+    pub fn render(&self) -> Spans<'static> {
+        Spans::from(vec![
+            Span::styled(
+                format!("{}", self.state),
+                Style::default().fg(Color::White),
+            )
+        ])
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Focus {
     Main,
-    SearchAdd,
+    SearchAdd(Arc<RwLock<SearchEditor>>),
+    SearchEdit(Arc<RwLock<SearchEditor>>),
     Help,
     ConfirmClose,
 }
@@ -481,15 +532,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .config_dir()
         .join("windows_registry_search/logs/");
     let file = tracing_appender::rolling::daily(log_path, format!("log"));
-    let (stdout_writer, _guard) = tracing_appender::non_blocking(stdout());
     let (file_writer, _guard) = tracing_appender::non_blocking(file);
-    let logfile_layer = tracing_subscriber::fmt::layer().with_writer(file_writer);
     let level_filter = LevelFilter::from_level(Level::DEBUG);
-    let stdout_layer = tracing_subscriber::fmt::layer()
+    let logfile_layer = tracing_subscriber::fmt::layer()
         .with_line_number(true)
-        .with_writer(stdout_writer)
+        .with_writer(file_writer)
         .with_filter(level_filter);
-    let subscriber = Registry::default().with(stdout_layer).with(logfile_layer);
+    let subscriber = Registry::default().with(logfile_layer);
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
     enable_raw_mode()?;
@@ -510,9 +559,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if event::poll(EVENT_POLL_TIMEOUT).unwrap() {
             if let Ok(CEvent::Key(key)) = event::read() {
                 if let KeyEventKind::Press = key.kind {
-                    let focus = *focus_.read();
+                    let focus = focus_.read().to_owned();
                     match focus {
                         Focus::Main => match key.code {
+                            KeyCode::Char('n') => {
+                                *focus_.write() =
+                                    Focus::SearchAdd(Arc::new(RwLock::new(SearchEditor::new_add())));
+                            }
                             KeyCode::Char('h') => {
                                 *focus_.write() = Focus::Help;
                             }
@@ -551,25 +604,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             KeyCode::F(5) => static_menu_selection_event_receiver.toggle_running(),
                             _ => {}
                         },
-                        Focus::SearchAdd => {
-
-                        },
+                        Focus::SearchAdd(search_editor) => match key.code {
+                            KeyCode::Backspace => search_editor.write().backspace(),
+                            KeyCode::Char(ch) => search_editor.write().add_char(ch),
+                            KeyCode::Esc => *focus_.write() = Focus::Main,
+                            _ => {},
+                        }
+                        Focus::SearchEdit(search_editor) => {}
                         Focus::Help => match key.code {
                             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => {
                                 *focus_.write() = Focus::Main;
-                            },
-                            _ => {},
+                            }
+                            _ => {}
                         },
                         Focus::ConfirmClose => match key.code {
                             KeyCode::Esc | KeyCode::Char('n') => {
                                 *focus_.write() = Focus::Main;
-                            },
+                            }
                             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('q') => {
                                 stop_.store(true, Ordering::SeqCst);
                                 break;
-                            },
-                            _ => {},
-                        }
+                            }
+                            _ => {}
+                        },
                     }
                 }
             }
@@ -618,7 +675,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             let left_paragraph = Paragraph::new(static_menu_selection.generate_root_list()).block(
                 Block::default()
-                    .title(Span::styled("Selection", Style::default().fg(Color::White)))
+                    .title(Span::styled(
+                        "Root Selection",
+                        Style::default().fg(Color::White),
+                    ))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(if pane_selected == 0 {
                         SELECTION_COLOUR
@@ -634,7 +694,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .run_control_temporarily_disabled
                 .load(Ordering::SeqCst);
             controls.push(Spans::from(Span::styled(
-                if running { "Stop" } else { "Start" },
+                if running {
+                    if running && run_control_disabled {
+                        "Stopping"
+                    } else {
+                        "Stop"
+                    }
+                } else {
+                    "Start"
+                },
                 Style::default().fg(if running && !run_control_disabled {
                     Color::Green
                 } else if running && run_control_disabled {
@@ -643,7 +711,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     Color::White
                 }),
             )));
-            let middle_paragraph = Paragraph::new(controls)
+
+            let middle_column = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(92), Constraint::Percentage(8)].as_ref())
+                .split(bottom_chunks[1]);
+
+            let search_terms_paragraph = Paragraph::new("")
+                .block(
+                    Block::default()
+                        .title(Span::styled(
+                            "Search Terms",
+                            Style::default().fg(Color::White),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(if pane_selected == 1 {
+                            SELECTION_COLOUR
+                        } else {
+                            Color::White
+                        })),
+                )
+                .wrap(Wrap { trim: true });
+            f.render_widget(search_terms_paragraph, middle_column[0]);
+            let controls_paragraph = Paragraph::new(controls)
                 .block(
                     Block::default()
                         .title(Span::styled("Controls", Style::default().fg(Color::White)))
@@ -655,7 +745,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         })),
                 )
                 .wrap(Wrap { trim: true });
-            f.render_widget(middle_paragraph, bottom_chunks[1]);
+            f.render_widget(controls_paragraph, middle_column[1]);
 
             let right_text = Text::from("Results will be shown here.");
             let right_paragraph = Paragraph::new(right_text).block(
@@ -670,45 +760,79 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
             f.render_widget(right_paragraph, bottom_chunks[2]);
 
-            let focus = *focus.read();
+            //Renders overlay
+            let focus = focus.read().to_owned();
             match focus {
-                Focus::Main => {},
+                Focus::Main => {}
                 _ => {
                     let vertical_split = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)].as_ref())
-                    .split(f.size());
+                        .direction(Direction::Vertical)
+                        .constraints(
+                            [
+                                Constraint::Ratio(1, 3),
+                                Constraint::Ratio(1, 3),
+                                Constraint::Ratio(1, 3),
+                            ]
+                            .as_ref(),
+                        )
+                        .split(f.size());
                     let horizontal_split = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)].as_ref())
-                    .split(vertical_split[1]);
+                        .direction(Direction::Horizontal)
+                        .constraints(
+                            [
+                                Constraint::Ratio(1, 3),
+                                Constraint::Ratio(1, 3),
+                                Constraint::Ratio(1, 3),
+                            ]
+                            .as_ref(),
+                        )
+                        .split(vertical_split[1]);
                     let middle_pane = horizontal_split[1];
                     let paragraph = match focus {
                         Focus::ConfirmClose => Paragraph::new("Y/N").block(
                             Block::default()
-                                .title(Span::styled("Confirm Close", Style::default().fg(Color::White)))
+                                .title(Span::styled(
+                                    "Confirm Close",
+                                    Style::default().fg(Color::White),
+                                ))
                                 .style(Style::default().bg(Color::DarkGray))
                                 .borders(Borders::ALL)
                                 .border_style(Style::default().fg(Color::White)),
                         ),
                         Focus::Help => Paragraph::new("Placeholder").block(
                             Block::default()
-                                .title(Span::styled("Help/Controls", Style::default().fg(Color::White)))
+                                .title(Span::styled(
+                                    "Help/Controls",
+                                    Style::default().fg(Color::White),
+                                ))
                                 .style(Style::default().bg(Color::DarkGray))
                                 .borders(Borders::ALL)
                                 .border_style(Style::default().fg(Color::White)),
                         ),
-                        Focus::SearchAdd => Paragraph::new("Placeholder").block(
+                        Focus::SearchAdd(search_editor) => Paragraph::new(search_editor.read().render()).block(
                             Block::default()
-                                .title(Span::styled("Search Add/Update", Style::default().fg(Color::White)))
+                                .title(Span::styled(
+                                    "Search Add/Update",
+                                    Style::default().fg(Color::White),
+                                ))
                                 .style(Style::default().bg(Color::DarkGray))
                                 .borders(Borders::ALL)
                                 .border_style(Style::default().fg(Color::White)),
                         ),
-                        Focus::Main => panic!(),//this case will never run
+                        Focus::SearchEdit(search_editor) => Paragraph::new(search_editor.read().render()).block(
+                            Block::default()
+                                .title(Span::styled(
+                                    "Search Add/Update",
+                                    Style::default().fg(Color::White),
+                                ))
+                                .style(Style::default().bg(Color::DarkGray))
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::White)),
+                        ),
+                        Focus::Main => panic!(), //this case will never run
                     };
                     f.render_widget(paragraph, middle_pane);
-                },
+                }
             }
         })?;
     }
