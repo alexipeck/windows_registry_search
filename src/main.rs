@@ -11,18 +11,17 @@ use std::{
     collections::{HashSet, VecDeque},
     error::Error,
     fmt,
-    io::{self, stdout},
     sync::{
         atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         Arc,
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant}, io,
 };
 use strum::EnumIter;
 use strum::IntoEnumIterator;
 use tokio::sync::Notify;
-use tracing::Level;
+use tracing::{Level, error};
 use tracing::{debug, info, warn};
 use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, registry::Registry, Layer};
 use tui::{
@@ -33,7 +32,6 @@ use tui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
 };
-use uuid::Uuid;
 use winreg::{enums::*, RegKey};
 
 const DEBOUNCE: Duration = Duration::from_millis(100);
@@ -320,13 +318,14 @@ impl SelectedRoots {
 pub struct StaticSelection {
     pane_selected: Arc<AtomicU8>,           //horizontal
     pane_last_changed: Arc<Mutex<Instant>>, //horizontal
-    middle_pane_selected: Arc<AtomicU8>,
-    middle_pane_last_changed: Arc<Mutex<Instant>>,
+    search_term_selected: Arc<AtomicU8>,
+    search_term_last_changed: Arc<Mutex<Instant>>,
 
     root_selected: Arc<AtomicU8>,
     root_selection_last_changed: Arc<Mutex<Instant>>,
 
     selected_roots: Arc<RwLock<SelectedRoots>>,
+    search_terms: Arc<RwLock<HashSet<String>>>,
 
     running: Arc<AtomicBool>,
     run_control_temporarily_disabled: Arc<AtomicBool>, //running thread resets this once closed
@@ -338,11 +337,12 @@ impl Default for StaticSelection {
         Self {
             pane_selected: Arc::new(AtomicU8::new(0)),
             pane_last_changed: Arc::new(Mutex::new(Instant::now())),
-            middle_pane_selected: Arc::new(AtomicU8::new(0)),
-            middle_pane_last_changed: Arc::new(Mutex::new(Instant::now())),
+            search_term_selected: Arc::new(AtomicU8::new(0)),
+            search_term_last_changed: Arc::new(Mutex::new(Instant::now())),
             root_selected: Arc::new(AtomicU8::new(0)),
             root_selection_last_changed: Arc::new(Mutex::new(Instant::now())),
             selected_roots: Arc::new(RwLock::new(SelectedRoots::default())),
+            search_terms: Arc::new(RwLock::new(HashSet::new())),
             running: Arc::new(AtomicBool::new(false)),
             run_control_temporarily_disabled: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
@@ -370,6 +370,25 @@ impl StaticSelection {
                         if root_enabled { "Enabled" } else { "Disabled" },
                         Style::default().fg(if root_enabled {
                             Color::Green
+                        } else {
+                            Color::White
+                        }),
+                    ),
+                ])
+            })
+            .collect::<Vec<Spans>>()
+    }
+
+    pub fn render_search_terms(&self) -> Vec<Spans<'static>> {
+        let search_term_selected = self.search_term_selected.load(Ordering::SeqCst);
+        let pane_selected = false;//TODO
+        self.search_terms.read().iter().enumerate()
+            .map(|(index, term)| {
+                Spans::from(vec![
+                    Span::styled(
+                        format!("{:25}", term.to_string(),),
+                        Style::default().fg(if pane_selected && index as u8 == search_term_selected {
+                            SELECTION_COLOUR
                         } else {
                             Color::White
                         }),
@@ -471,10 +490,10 @@ impl StaticSelection {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum EditorMode {
     Add,
-    Edit(Uuid),
+    Edit(String),
 }
 
 #[derive(Debug, Clone)]
@@ -490,10 +509,10 @@ impl SearchEditor {
             state: String::new(),
         }
     }
-    pub fn new_edit(uid: Uuid, initial_state: String) -> Self {
+    pub fn new_edit(original: String) -> Self {
         Self {
-            mode: EditorMode::Edit(uid),
-            state: initial_state,
+            mode: EditorMode::Edit(original.to_owned()),
+            state: original,
         }
     }
     pub fn add_char(&mut self, ch: char) {
@@ -519,8 +538,8 @@ impl SearchEditor {
 #[derive(Debug, Clone)]
 pub enum Focus {
     Main,
-    SearchAdd(Arc<RwLock<SearchEditor>>),
-    SearchEdit(Arc<RwLock<SearchEditor>>),
+    SearchAdd(Arc<RwLock<Option<SearchEditor>>>),
+    SearchEdit(Arc<RwLock<Option<SearchEditor>>>),
     Help,
     ConfirmClose,
 }
@@ -562,16 +581,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let focus = focus_.read().to_owned();
                     match focus {
                         Focus::Main => match key.code {
-                            KeyCode::Char('n') => {
-                                *focus_.write() =
-                                    Focus::SearchAdd(Arc::new(RwLock::new(SearchEditor::new_add())));
-                            }
-                            KeyCode::Char('h') => {
-                                *focus_.write() = Focus::Help;
-                            }
-                            KeyCode::Char('q') | KeyCode::Esc => {
-                                *focus_.write() = Focus::ConfirmClose;
-                            }
+                            KeyCode::Char('n') => *focus_.write() = Focus::SearchAdd(Arc::new(RwLock::new(Some(SearchEditor::new_add())))),
+                            KeyCode::Char('h') => *focus_.write() = Focus::Help,
+                            KeyCode::Char('q') | KeyCode::Esc => *focus_.write() = Focus::ConfirmClose,
                             KeyCode::Left => static_menu_selection_event_receiver.pane_left(),
                             KeyCode::Right => static_menu_selection_event_receiver.pane_right(),
                             KeyCode::Up => match static_menu_selection_event_receiver
@@ -605,16 +617,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             _ => {}
                         },
                         Focus::SearchAdd(search_editor) => match key.code {
-                            KeyCode::Backspace => search_editor.write().backspace(),
-                            KeyCode::Char(ch) => search_editor.write().add_char(ch),
+                            KeyCode::Backspace => search_editor.write().as_mut().unwrap().backspace(),
+                            KeyCode::Char(ch) => search_editor.write().as_mut().unwrap().add_char(ch),
                             KeyCode::Esc => *focus_.write() = Focus::Main,
+                            KeyCode::Enter => {
+                                let mut focus_lock = focus_.write();//this lock must be held until the end of this scope
+                                let mut search_editor_lock = search_editor.write();//it is imperitive that nothing tries to read this lock after this write cycle, it should be safe
+                                let probably_search_editor = search_editor_lock.take();
+                                *focus_lock = Focus::Main;
+                                let search_editor = match probably_search_editor {
+                                    Some(search_editor) => search_editor,
+                                    None => {
+                                        error!("Write proper error here, this shouldn't be possible as this loop runthrough is the only place that can both run a write lock on search_editor or focus.");
+                                        continue;
+                                    }
+                                };
+                                let (editor_mode, state) = search_editor.resolve();
+                                let mut search_terms_lock = static_menu_selection_event_receiver.search_terms.write();
+                                match editor_mode {
+                                    EditorMode::Add => {
+                                        let _ = search_terms_lock.insert(state);
+                                    },
+                                    EditorMode::Edit(original) => {
+                                        search_terms_lock.remove(&original);
+                                        let _ = search_terms_lock.insert(state);
+                                    },
+                                }
+                            },
                             _ => {},
                         }
                         Focus::SearchEdit(search_editor) => {}
                         Focus::Help => match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => {
-                                *focus_.write() = Focus::Main;
-                            }
+                            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => *focus_.write() = Focus::Main,
                             _ => {}
                         },
                         Focus::ConfirmClose => match key.code {
@@ -717,7 +751,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .constraints([Constraint::Percentage(92), Constraint::Percentage(8)].as_ref())
                 .split(bottom_chunks[1]);
 
-            let search_terms_paragraph = Paragraph::new("")
+            let search_terms_paragraph = Paragraph::new(static_menu_selection.render_search_terms())
                 .block(
                     Block::default()
                         .title(Span::styled(
@@ -809,7 +843,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .borders(Borders::ALL)
                                 .border_style(Style::default().fg(Color::White)),
                         ),
-                        Focus::SearchAdd(search_editor) => Paragraph::new(search_editor.read().render()).block(
+                        Focus::SearchAdd(search_editor) => Paragraph::new(search_editor.read().as_ref().unwrap().render()).block(
                             Block::default()
                                 .title(Span::styled(
                                     "Search Add/Update",
@@ -819,7 +853,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .borders(Borders::ALL)
                                 .border_style(Style::default().fg(Color::White)),
                         ),
-                        Focus::SearchEdit(search_editor) => Paragraph::new(search_editor.read().render()).block(
+                        Focus::SearchEdit(search_editor) => Paragraph::new(search_editor.read().as_ref().unwrap().render()).block(
                             Block::default()
                                 .title(Span::styled(
                                     "Search Add/Update",
