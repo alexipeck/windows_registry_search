@@ -466,6 +466,14 @@ impl StaticSelection {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Focus {
+    Main,
+    SearchAdd,
+    Help,
+    ConfirmClose,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let base_directories = BaseDirs::new().expect("Base directories not found");
@@ -491,50 +499,77 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
+    let focus: Arc<RwLock<Focus>> = Arc::new(RwLock::new(Focus::Main));
+
     let static_menu_selection: Arc<StaticSelection> = Arc::new(StaticSelection::default());
     let static_menu_selection_event_receiver = static_menu_selection.to_owned();
     let stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let stop_ = stop.to_owned();
+    let focus_ = focus.to_owned();
     thread::spawn(move || loop {
         if event::poll(EVENT_POLL_TIMEOUT).unwrap() {
             if let Ok(CEvent::Key(key)) = event::read() {
                 if let KeyEventKind::Press = key.kind {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            stop_.store(true, Ordering::SeqCst);
-                            break;
+                    let focus = *focus_.read();
+                    match focus {
+                        Focus::Main => match key.code {
+                            KeyCode::Char('h') => {
+                                *focus_.write() = Focus::Help;
+                            }
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                *focus_.write() = Focus::ConfirmClose;
+                            }
+                            KeyCode::Left => static_menu_selection_event_receiver.pane_left(),
+                            KeyCode::Right => static_menu_selection_event_receiver.pane_right(),
+                            KeyCode::Up => match static_menu_selection_event_receiver
+                                .pane_selected
+                                .load(Ordering::SeqCst)
+                            {
+                                0 => static_menu_selection_event_receiver.root_up(),
+                                1 => {}
+                                2 => {}
+                                _ => {}
+                            },
+                            KeyCode::Down => match static_menu_selection_event_receiver
+                                .pane_selected
+                                .load(Ordering::SeqCst)
+                            {
+                                0 => static_menu_selection_event_receiver.root_down(),
+                                1 => {}
+                                2 => {}
+                                _ => {}
+                            },
+                            KeyCode::Enter => match static_menu_selection_event_receiver
+                                .pane_selected
+                                .load(Ordering::SeqCst)
+                            {
+                                0 => static_menu_selection_event_receiver.root_toggle(),
+                                1 => {}
+                                2 => {}
+                                _ => {}
+                            },
+                            KeyCode::F(5) => static_menu_selection_event_receiver.toggle_running(),
+                            _ => {}
+                        },
+                        Focus::SearchAdd => {
+
+                        },
+                        Focus::Help => match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => {
+                                *focus_.write() = Focus::Main;
+                            },
+                            _ => {},
+                        },
+                        Focus::ConfirmClose => match key.code {
+                            KeyCode::Esc | KeyCode::Char('n') => {
+                                *focus_.write() = Focus::Main;
+                            },
+                            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('q') => {
+                                stop_.store(true, Ordering::SeqCst);
+                                break;
+                            },
+                            _ => {},
                         }
-                        KeyCode::Left => static_menu_selection_event_receiver.pane_left(),
-                        KeyCode::Right => static_menu_selection_event_receiver.pane_right(),
-                        KeyCode::Up => match static_menu_selection_event_receiver
-                            .pane_selected
-                            .load(Ordering::SeqCst)
-                        {
-                            0 => static_menu_selection_event_receiver.root_up(),
-                            1 => {}
-                            2 => {}
-                            _ => {}
-                        },
-                        KeyCode::Down => match static_menu_selection_event_receiver
-                            .pane_selected
-                            .load(Ordering::SeqCst)
-                        {
-                            0 => static_menu_selection_event_receiver.root_down(),
-                            1 => {}
-                            2 => {}
-                            _ => {}
-                        },
-                        KeyCode::Enter => match static_menu_selection_event_receiver
-                            .pane_selected
-                            .load(Ordering::SeqCst)
-                        {
-                            0 => static_menu_selection_event_receiver.root_toggle(),
-                            1 => {}
-                            2 => {}
-                            _ => {}
-                        },
-                        KeyCode::F(5) => static_menu_selection_event_receiver.toggle_running(),
-                        _ => {}
                     }
                 }
             }
@@ -553,6 +588,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .split(f.size());
             let top_paragraph = Paragraph::new(
                 vec![
+                    "H for the Help menu",
                     "Arrow keys for navigation",
                     "Enter to select/toggle",
                     "Page up/down for first/last element",
@@ -633,6 +669,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     })),
             );
             f.render_widget(right_paragraph, bottom_chunks[2]);
+
+            let focus = *focus.read();
+            match focus {
+                Focus::Main => {},
+                _ => {
+                    let vertical_split = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)].as_ref())
+                    .split(f.size());
+                    let horizontal_split = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)].as_ref())
+                    .split(vertical_split[1]);
+                    let middle_pane = horizontal_split[1];
+                    let paragraph = match focus {
+                        Focus::ConfirmClose => Paragraph::new("Y/N").block(
+                            Block::default()
+                                .title(Span::styled("Confirm Close", Style::default().fg(Color::White)))
+                                .style(Style::default().bg(Color::DarkGray))
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::White)),
+                        ),
+                        Focus::Help => Paragraph::new("Placeholder").block(
+                            Block::default()
+                                .title(Span::styled("Help/Controls", Style::default().fg(Color::White)))
+                                .style(Style::default().bg(Color::DarkGray))
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::White)),
+                        ),
+                        Focus::SearchAdd => Paragraph::new("Placeholder").block(
+                            Block::default()
+                                .title(Span::styled("Search Add/Update", Style::default().fg(Color::White)))
+                                .style(Style::default().bg(Color::DarkGray))
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::White)),
+                        ),
+                        Focus::Main => panic!(),//this case will never run
+                    };
+                    f.render_widget(paragraph, middle_pane);
+                },
+            }
         })?;
     }
 
