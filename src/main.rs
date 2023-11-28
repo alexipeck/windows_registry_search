@@ -318,7 +318,7 @@ impl SelectedRoots {
 pub struct StaticSelection {
     pane_selected: Arc<AtomicU8>,           //horizontal
     pane_last_changed: Arc<Mutex<Instant>>, //horizontal
-    search_term_selected: Arc<AtomicU8>,
+    search_term_selected: Arc<AtomicUsize>,
     search_term_last_changed: Arc<Mutex<Instant>>,
 
     root_selected: Arc<AtomicU8>,
@@ -337,7 +337,7 @@ impl Default for StaticSelection {
         Self {
             pane_selected: Arc::new(AtomicU8::new(0)),
             pane_last_changed: Arc::new(Mutex::new(Instant::now())),
-            search_term_selected: Arc::new(AtomicU8::new(0)),
+            search_term_selected: Arc::new(AtomicUsize::new(0)),
             search_term_last_changed: Arc::new(Mutex::new(Instant::now())),
             root_selected: Arc::new(AtomicU8::new(0)),
             root_selection_last_changed: Arc::new(Mutex::new(Instant::now())),
@@ -381,13 +381,13 @@ impl StaticSelection {
 
     pub fn render_search_terms(&self) -> Vec<Spans<'static>> {
         let search_term_selected = self.search_term_selected.load(Ordering::SeqCst);
-        let pane_selected = false;//TODO
+        let pane_selected = self.pane_selected.load(Ordering::SeqCst) == 1;
         self.search_terms.read().iter().enumerate()
             .map(|(index, term)| {
                 Spans::from(vec![
                     Span::styled(
                         format!("{:25}", term.to_string(),),
-                        Style::default().fg(if pane_selected && index as u8 == search_term_selected {
+                        Style::default().fg(if pane_selected && index == search_term_selected {
                             SELECTION_COLOUR
                         } else {
                             Color::White
@@ -456,6 +456,32 @@ impl StaticSelection {
         };
         self.root_selected.store(new_value, Ordering::SeqCst);
         *self.root_selection_last_changed.lock() = Instant::now();
+    }
+
+    pub fn search_term_up(&self) {
+
+    }
+
+    pub fn search_term_down(&self) {
+        if self.search_term_last_changed.lock().elapsed() < DEBOUNCE {
+            return;
+        }
+        let search_terms_len = self.search_terms.read().len();
+        if search_terms_len == 0 {
+            return;
+        }
+        let max_index: usize = if search_terms_len > 1 {
+            search_terms_len - 1
+        } else {
+            search_terms_len
+        };
+        let current = self.search_term_selected.load(Ordering::SeqCst);
+        self.search_term_selected.store(if current + 1 <= max_index {
+            current + 1
+        } else {
+            0
+        }, Ordering::SeqCst);
+        *self.search_term_last_changed.lock() = Instant::now();
     }
 
     pub fn root_toggle(&self) {
@@ -591,7 +617,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .load(Ordering::SeqCst)
                             {
                                 0 => static_menu_selection_event_receiver.root_up(),
-                                1 => {}
+                                1 => static_menu_selection_event_receiver.search_term_up(),
                                 2 => {}
                                 _ => {}
                             },
@@ -600,7 +626,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .load(Ordering::SeqCst)
                             {
                                 0 => static_menu_selection_event_receiver.root_down(),
-                                1 => {}
+                                1 => static_menu_selection_event_receiver.search_term_down(),
                                 2 => {}
                                 _ => {}
                             },
@@ -772,11 +798,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     Block::default()
                         .title(Span::styled("Controls", Style::default().fg(Color::White)))
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(if pane_selected == 1 {
-                            SELECTION_COLOUR
-                        } else {
-                            Color::White
-                        })),
+                        .border_style(Style::default().fg(Color::White)),
                 )
                 .wrap(Wrap { trim: true });
             f.render_widget(controls_paragraph, middle_column[1]);
