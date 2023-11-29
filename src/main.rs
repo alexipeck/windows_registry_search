@@ -8,21 +8,21 @@ use crossterm::{
 use directories::BaseDirs;
 use parking_lot::{Mutex, RwLock};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{BTreeSet, HashSet, VecDeque},
     error::Error,
-    fmt,
+    fmt, io,
     sync::{
         atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         Arc,
     },
     thread,
-    time::{Duration, Instant}, io,
+    time::{Duration, Instant},
 };
 use strum::EnumIter;
 use strum::IntoEnumIterator;
 use tokio::sync::Notify;
-use tracing::{Level, error};
 use tracing::{debug, info, warn};
+use tracing::{error, Level};
 use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, registry::Registry, Layer};
 use tui::{
     backend::CrosstermBackend,
@@ -315,17 +315,117 @@ impl SelectedRoots {
     }
 }
 
+pub struct SearchTermTracker {
+    pub search_term_selected: usize,
+    pub search_term_last_changed: Instant,
+    pub search_terms: BTreeSet<String>,
+}
+
+impl Default for SearchTermTracker {
+    fn default() -> Self {
+        Self {
+            search_term_selected: 0,
+            search_term_last_changed: Instant::now(),
+            search_terms: BTreeSet::new(),
+        }
+    }
+}
+
+impl SearchTermTracker {
+    fn get_value_from_index(&self, index: usize) -> Option<String> {
+        if self.search_terms.is_empty() {
+            return None;
+        }
+        self.search_terms.iter().nth(index).cloned()
+    }
+
+    pub fn update(&mut self, editor_mode: EditorMode, state: String) {
+        let mut current_index_value = self.get_value_from_index(self.search_term_selected);
+        if current_index_value.is_none() && self.search_terms.len() > 0 {
+            error!("Error retrieving value from search terms by index when map is not empty. Add/Edit action discarded.");
+            return;
+        }
+        match editor_mode {
+            EditorMode::Add => {
+                let _ = self.search_terms.insert(state);
+            }
+            EditorMode::Edit(original) => {
+                if current_index_value.as_ref().unwrap() == &original {
+                    current_index_value = Some(state.to_owned());
+                }
+                self.search_terms.remove(&original);
+                let _ = self.search_terms.insert(state);
+            }
+        }
+        if let Some(current_index_value) = &current_index_value {
+            for (index, search_term) in self.search_terms.iter().enumerate() {
+                if search_term == current_index_value {
+                    if self.search_term_selected != index {
+                        self.search_term_selected = index;
+                        return;
+                    }
+                    error!("Current value was not found in ordered map, this is a logic error.");
+                }
+            }
+        } else {
+            debug!("No value present to guarantee same entry is selected after modification, map is assumed to have been empty prior.");
+        }
+    }
+
+    pub fn remove(&mut self, term: String) {}
+
+    pub fn up(&mut self) {}
+
+    pub fn down(&mut self) {
+        if self.search_term_last_changed.elapsed() < DEBOUNCE {
+            return;
+        }
+        let search_terms_len = self.search_terms.len();
+        if search_terms_len == 0 {
+            return;
+        }
+        let max_index: usize = if search_terms_len > 1 {
+            search_terms_len - 1
+        } else {
+            search_terms_len
+        };
+        let current = self.search_term_selected;
+        self.search_term_selected = if current + 1 <= max_index {
+            current + 1
+        } else {
+            0
+        };
+        self.search_term_last_changed = Instant::now();
+    }
+
+    pub fn render(&self, pane_selected: bool) -> Vec<Spans<'static>> {
+        self.search_terms
+            .iter()
+            .enumerate()
+            .map(|(index, term)| {
+                Spans::from(vec![Span::styled(
+                    format!("{:25}", term.to_string(),),
+                    Style::default().fg(if pane_selected && index == self.search_term_selected {
+                        SELECTION_COLOUR
+                    } else {
+                        Color::White
+                    }),
+                )])
+            })
+            .collect::<Vec<Spans>>()
+    }
+}
+
 pub struct StaticSelection {
     pane_selected: Arc<AtomicU8>,           //horizontal
     pane_last_changed: Arc<Mutex<Instant>>, //horizontal
-    search_term_selected: Arc<AtomicUsize>,
-    search_term_last_changed: Arc<Mutex<Instant>>,
+
+    search_term_tracker: Arc<RwLock<SearchTermTracker>>,
 
     root_selected: Arc<AtomicU8>,
     root_selection_last_changed: Arc<Mutex<Instant>>,
 
     selected_roots: Arc<RwLock<SelectedRoots>>,
-    search_terms: Arc<RwLock<HashSet<String>>>,
 
     running: Arc<AtomicBool>,
     run_control_temporarily_disabled: Arc<AtomicBool>, //running thread resets this once closed
@@ -337,12 +437,10 @@ impl Default for StaticSelection {
         Self {
             pane_selected: Arc::new(AtomicU8::new(0)),
             pane_last_changed: Arc::new(Mutex::new(Instant::now())),
-            search_term_selected: Arc::new(AtomicUsize::new(0)),
-            search_term_last_changed: Arc::new(Mutex::new(Instant::now())),
             root_selected: Arc::new(AtomicU8::new(0)),
             root_selection_last_changed: Arc::new(Mutex::new(Instant::now())),
+            search_term_tracker: Arc::new(RwLock::new(SearchTermTracker::default())),
             selected_roots: Arc::new(RwLock::new(SelectedRoots::default())),
-            search_terms: Arc::new(RwLock::new(HashSet::new())),
             running: Arc::new(AtomicBool::new(false)),
             run_control_temporarily_disabled: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
@@ -370,25 +468,6 @@ impl StaticSelection {
                         if root_enabled { "Enabled" } else { "Disabled" },
                         Style::default().fg(if root_enabled {
                             Color::Green
-                        } else {
-                            Color::White
-                        }),
-                    ),
-                ])
-            })
-            .collect::<Vec<Spans>>()
-    }
-
-    pub fn render_search_terms(&self) -> Vec<Spans<'static>> {
-        let search_term_selected = self.search_term_selected.load(Ordering::SeqCst);
-        let pane_selected = self.pane_selected.load(Ordering::SeqCst) == 1;
-        self.search_terms.read().iter().enumerate()
-            .map(|(index, term)| {
-                Spans::from(vec![
-                    Span::styled(
-                        format!("{:25}", term.to_string(),),
-                        Style::default().fg(if pane_selected && index == search_term_selected {
-                            SELECTION_COLOUR
                         } else {
                             Color::White
                         }),
@@ -456,32 +535,6 @@ impl StaticSelection {
         };
         self.root_selected.store(new_value, Ordering::SeqCst);
         *self.root_selection_last_changed.lock() = Instant::now();
-    }
-
-    pub fn search_term_up(&self) {
-
-    }
-
-    pub fn search_term_down(&self) {
-        if self.search_term_last_changed.lock().elapsed() < DEBOUNCE {
-            return;
-        }
-        let search_terms_len = self.search_terms.read().len();
-        if search_terms_len == 0 {
-            return;
-        }
-        let max_index: usize = if search_terms_len > 1 {
-            search_terms_len - 1
-        } else {
-            search_terms_len
-        };
-        let current = self.search_term_selected.load(Ordering::SeqCst);
-        self.search_term_selected.store(if current + 1 <= max_index {
-            current + 1
-        } else {
-            0
-        }, Ordering::SeqCst);
-        *self.search_term_last_changed.lock() = Instant::now();
     }
 
     pub fn root_toggle(&self) {
@@ -552,12 +605,10 @@ impl SearchEditor {
     }
 
     pub fn render(&self) -> Spans<'static> {
-        Spans::from(vec![
-            Span::styled(
-                format!("{}", self.state),
-                Style::default().fg(Color::White),
-            )
-        ])
+        Spans::from(vec![Span::styled(
+            format!("{}", self.state),
+            Style::default().fg(Color::White),
+        )])
     }
 }
 
@@ -607,9 +658,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let focus = focus_.read().to_owned();
                     match focus {
                         Focus::Main => match key.code {
-                            KeyCode::Char('n') => *focus_.write() = Focus::SearchAdd(Arc::new(RwLock::new(Some(SearchEditor::new_add())))),
+                            KeyCode::Char('n') => {
+                                *focus_.write() = Focus::SearchAdd(Arc::new(RwLock::new(Some(
+                                    SearchEditor::new_add(),
+                                ))))
+                            }
                             KeyCode::Char('h') => *focus_.write() = Focus::Help,
-                            KeyCode::Char('q') | KeyCode::Esc => *focus_.write() = Focus::ConfirmClose,
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                *focus_.write() = Focus::ConfirmClose
+                            }
                             KeyCode::Left => static_menu_selection_event_receiver.pane_left(),
                             KeyCode::Right => static_menu_selection_event_receiver.pane_right(),
                             KeyCode::Up => match static_menu_selection_event_receiver
@@ -617,7 +674,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .load(Ordering::SeqCst)
                             {
                                 0 => static_menu_selection_event_receiver.root_up(),
-                                1 => static_menu_selection_event_receiver.search_term_up(),
+                                1 => static_menu_selection_event_receiver
+                                    .search_term_tracker
+                                    .write()
+                                    .up(),
                                 2 => {}
                                 _ => {}
                             },
@@ -626,7 +686,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .load(Ordering::SeqCst)
                             {
                                 0 => static_menu_selection_event_receiver.root_down(),
-                                1 => static_menu_selection_event_receiver.search_term_down(),
+                                1 => static_menu_selection_event_receiver
+                                    .search_term_tracker
+                                    .write()
+                                    .down(),
                                 2 => {}
                                 _ => {}
                             },
@@ -643,12 +706,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             _ => {}
                         },
                         Focus::SearchAdd(search_editor) => match key.code {
-                            KeyCode::Backspace => search_editor.write().as_mut().unwrap().backspace(),
-                            KeyCode::Char(ch) => search_editor.write().as_mut().unwrap().add_char(ch),
+                            KeyCode::Backspace => {
+                                search_editor.write().as_mut().unwrap().backspace()
+                            }
+                            KeyCode::Char(ch) => {
+                                search_editor.write().as_mut().unwrap().add_char(ch)
+                            }
                             KeyCode::Esc => *focus_.write() = Focus::Main,
                             KeyCode::Enter => {
-                                let mut focus_lock = focus_.write();//this lock must be held until the end of this scope
-                                let mut search_editor_lock = search_editor.write();//it is imperitive that nothing tries to read this lock after this write cycle, it should be safe
+                                let mut focus_lock = focus_.write(); //this lock must be held until the end of this scope
+                                let mut search_editor_lock = search_editor.write(); //it is imperitive that nothing tries to read this lock after this write cycle, it should be safe
                                 let probably_search_editor = search_editor_lock.take();
                                 *focus_lock = Focus::Main;
                                 let search_editor = match probably_search_editor {
@@ -659,22 +726,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     }
                                 };
                                 let (editor_mode, state) = search_editor.resolve();
-                                let mut search_terms_lock = static_menu_selection_event_receiver.search_terms.write();
-                                match editor_mode {
-                                    EditorMode::Add => {
-                                        let _ = search_terms_lock.insert(state);
-                                    },
-                                    EditorMode::Edit(original) => {
-                                        search_terms_lock.remove(&original);
-                                        let _ = search_terms_lock.insert(state);
-                                    },
-                                }
-                            },
-                            _ => {},
-                        }
+                                let mut search_term_tracker_lock =
+                                    static_menu_selection_event_receiver
+                                        .search_term_tracker
+                                        .write()
+                                        .update(editor_mode, state);
+                            }
+                            _ => {}
+                        },
                         Focus::SearchEdit(search_editor) => {}
                         Focus::Help => match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => *focus_.write() = Focus::Main,
+                            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => {
+                                *focus_.write() = Focus::Main
+                            }
                             _ => {}
                         },
                         Focus::ConfirmClose => match key.code {
@@ -777,21 +841,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .constraints([Constraint::Percentage(92), Constraint::Percentage(8)].as_ref())
                 .split(bottom_chunks[1]);
 
-            let search_terms_paragraph = Paragraph::new(static_menu_selection.render_search_terms())
-                .block(
-                    Block::default()
-                        .title(Span::styled(
-                            "Search Terms",
-                            Style::default().fg(Color::White),
-                        ))
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(if pane_selected == 1 {
-                            SELECTION_COLOUR
-                        } else {
-                            Color::White
-                        })),
-                )
-                .wrap(Wrap { trim: true });
+            let search_terms_paragraph = Paragraph::new(
+                static_menu_selection
+                    .search_term_tracker
+                    .read()
+                    .render(pane_selected == 1),
+            )
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        "Search Terms",
+                        Style::default().fg(Color::White),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(if pane_selected == 1 {
+                        SELECTION_COLOUR
+                    } else {
+                        Color::White
+                    })),
+            )
+            .wrap(Wrap { trim: true });
             f.render_widget(search_terms_paragraph, middle_column[0]);
             let controls_paragraph = Paragraph::new(controls)
                 .block(
@@ -865,26 +934,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .borders(Borders::ALL)
                                 .border_style(Style::default().fg(Color::White)),
                         ),
-                        Focus::SearchAdd(search_editor) => Paragraph::new(search_editor.read().as_ref().unwrap().render()).block(
-                            Block::default()
-                                .title(Span::styled(
-                                    "Search Add/Update",
-                                    Style::default().fg(Color::White),
-                                ))
-                                .style(Style::default().bg(Color::DarkGray))
-                                .borders(Borders::ALL)
-                                .border_style(Style::default().fg(Color::White)),
-                        ),
-                        Focus::SearchEdit(search_editor) => Paragraph::new(search_editor.read().as_ref().unwrap().render()).block(
-                            Block::default()
-                                .title(Span::styled(
-                                    "Search Add/Update",
-                                    Style::default().fg(Color::White),
-                                ))
-                                .style(Style::default().bg(Color::DarkGray))
-                                .borders(Borders::ALL)
-                                .border_style(Style::default().fg(Color::White)),
-                        ),
+                        Focus::SearchAdd(search_editor) => {
+                            Paragraph::new(search_editor.read().as_ref().unwrap().render()).block(
+                                Block::default()
+                                    .title(Span::styled(
+                                        "Search Add/Update",
+                                        Style::default().fg(Color::White),
+                                    ))
+                                    .style(Style::default().bg(Color::DarkGray))
+                                    .borders(Borders::ALL)
+                                    .border_style(Style::default().fg(Color::White)),
+                            )
+                        }
+                        Focus::SearchEdit(search_editor) => {
+                            Paragraph::new(search_editor.read().as_ref().unwrap().render()).block(
+                                Block::default()
+                                    .title(Span::styled(
+                                        "Search Add/Update",
+                                        Style::default().fg(Color::White),
+                                    ))
+                                    .style(Style::default().bg(Color::DarkGray))
+                                    .borders(Borders::ALL)
+                                    .border_style(Style::default().fg(Color::White)),
+                            )
+                        }
                         Focus::Main => panic!(), //this case will never run
                     };
                     f.render_widget(paragraph, middle_pane);
