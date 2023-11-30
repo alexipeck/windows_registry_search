@@ -339,8 +339,12 @@ impl SearchTermTracker {
         self.search_terms.iter().nth(index).cloned()
     }
 
+    pub fn get_value_at_current_index(&self) -> Option<String> {
+        self.get_value_from_index(self.search_term_selected)
+    }
+
     pub fn update(&mut self, editor_mode: EditorMode, state: String) {
-        let mut current_index_value = self.get_value_from_index(self.search_term_selected);
+        let mut current_index_value = self.get_value_at_current_index();
         if current_index_value.is_none() && self.search_terms.len() > 0 {
             error!("Error retrieving value from search terms by index when map is not empty. Add/Edit action discarded.");
             return;
@@ -374,7 +378,27 @@ impl SearchTermTracker {
 
     pub fn remove(&mut self, term: String) {}
 
-    pub fn up(&mut self) {}
+    pub fn up(&mut self) {
+        if self.search_term_last_changed.elapsed() < DEBOUNCE {
+            return;
+        }
+        let search_terms_len = self.search_terms.len();
+        if search_terms_len == 0 {
+            return;
+        }
+        let max_index: usize = if search_terms_len > 1 {
+            search_terms_len - 1
+        } else {
+            search_terms_len
+        };
+        let current = self.search_term_selected;
+        self.search_term_selected = if current == 0 {
+            max_index
+        } else {
+            current - 1
+        };
+        self.search_term_last_changed = Instant::now();
+    }
 
     pub fn down(&mut self) {
         if self.search_term_last_changed.elapsed() < DEBOUNCE {
@@ -615,8 +639,7 @@ impl SearchEditor {
 #[derive(Debug, Clone)]
 pub enum Focus {
     Main,
-    SearchAdd(Arc<RwLock<Option<SearchEditor>>>),
-    SearchEdit(Arc<RwLock<Option<SearchEditor>>>),
+    SearchMod(Arc<RwLock<Option<SearchEditor>>>),
     Help,
     ConfirmClose,
 }
@@ -659,9 +682,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     match focus {
                         Focus::Main => match key.code {
                             KeyCode::Char('n') => {
-                                *focus_.write() = Focus::SearchAdd(Arc::new(RwLock::new(Some(
+                                *focus_.write() = Focus::SearchMod(Arc::new(RwLock::new(Some(
                                     SearchEditor::new_add(),
                                 ))))
+                            }
+                            KeyCode::Char('e') => {
+                                if static_menu_selection_event_receiver.pane_selected.load(Ordering::SeqCst) == 1 {
+                                    let (search_terms_is_empty, selected_search_term_value) = {
+                                        let search_term_tracker_lock = static_menu_selection_event_receiver.search_term_tracker.read();
+                                        (search_term_tracker_lock.search_terms.is_empty(), search_term_tracker_lock.get_value_at_current_index())
+                                    };
+                                    if !search_terms_is_empty {
+                                        if let Some(selected_search_term_value) = selected_search_term_value {
+                                            *focus_.write() = Focus::SearchMod(Arc::new(RwLock::new(Some(
+                                                SearchEditor::new_edit(selected_search_term_value),
+                                            ))))
+                                        } else {
+                                            error!("Search terms pane was selected, search terms was not empty, yet somehow there wasn't a value selected.");
+                                        }
+                                        
+                                    }
+                                }
                             }
                             KeyCode::Char('h') => *focus_.write() = Focus::Help,
                             KeyCode::Char('q') | KeyCode::Esc => {
@@ -705,7 +746,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             KeyCode::F(5) => static_menu_selection_event_receiver.toggle_running(),
                             _ => {}
                         },
-                        Focus::SearchAdd(search_editor) => match key.code {
+                        Focus::SearchMod(search_editor) => match key.code {
                             KeyCode::Backspace => {
                                 search_editor.write().as_mut().unwrap().backspace()
                             }
@@ -726,15 +767,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     }
                                 };
                                 let (editor_mode, state) = search_editor.resolve();
-                                let mut search_term_tracker_lock =
-                                    static_menu_selection_event_receiver
+                                static_menu_selection_event_receiver
                                         .search_term_tracker
                                         .write()
                                         .update(editor_mode, state);
                             }
                             _ => {}
                         },
-                        Focus::SearchEdit(search_editor) => {}
                         Focus::Help => match key.code {
                             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => {
                                 *focus_.write() = Focus::Main
@@ -934,23 +973,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .borders(Borders::ALL)
                                 .border_style(Style::default().fg(Color::White)),
                         ),
-                        Focus::SearchAdd(search_editor) => {
+                        Focus::SearchMod(search_editor) => {
                             Paragraph::new(search_editor.read().as_ref().unwrap().render()).block(
                                 Block::default()
                                     .title(Span::styled(
-                                        "Search Add/Update",
-                                        Style::default().fg(Color::White),
-                                    ))
-                                    .style(Style::default().bg(Color::DarkGray))
-                                    .borders(Borders::ALL)
-                                    .border_style(Style::default().fg(Color::White)),
-                            )
-                        }
-                        Focus::SearchEdit(search_editor) => {
-                            Paragraph::new(search_editor.read().as_ref().unwrap().render()).block(
-                                Block::default()
-                                    .title(Span::styled(
-                                        "Search Add/Update",
+                                        "Search Modify",
                                         Style::default().fg(Color::White),
                                     ))
                                     .style(Style::default().bg(Color::DarkGray))
