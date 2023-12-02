@@ -198,7 +198,7 @@ impl WorkerManager {
                     self.work_ready_for_processing.notify_waiters();
                 }
             }
-            thread::sleep(Duration::from_millis(100));
+            tokio::time::sleep(Duration::from_millis(100));
         }
     }
 }
