@@ -24,11 +24,11 @@ use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 use tracing::{error, Level};
 use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, registry::Registry, Layer};
-use tui::{
+use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    text::{Span, Spans, Text},
+    text::{Span, Line, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
 };
@@ -460,12 +460,12 @@ impl SearchTermTracker {
         self.search_term_last_changed = Instant::now();
     }
 
-    pub fn render(&self, pane_selected: bool) -> Vec<Spans<'static>> {
+    pub fn render(&self, pane_selected: bool) -> Vec<Line<'static>> {
         self.search_terms
             .iter()
             .enumerate()
             .map(|(index, term)| {
-                Spans::from(vec![Span::styled(
+                Line::from(vec![Span::styled(
                     term.to_string(),
                     Style::default().fg(if pane_selected && index == self.search_term_selected {
                         SELECTION_COLOUR
@@ -474,7 +474,7 @@ impl SearchTermTracker {
                     }),
                 )])
             })
-            .collect::<Vec<Spans>>()
+            .collect::<Vec<Line>>()
     }
 }
 
@@ -516,13 +516,13 @@ impl Default for StaticSelection {
 }
 
 impl StaticSelection {
-    pub fn generate_root_list(&self) -> Vec<Spans<'static>> {
+    pub fn generate_root_list(&self) -> Vec<Line<'static>> {
         let root_selected = self.root_selected.load(Ordering::SeqCst);
         let pane_selected = self.pane_selected.load(Ordering::SeqCst) == 0;
         Root::iter()
             .map(|root| {
                 let root_enabled = self.selected_roots.read().is_enabled(&root);
-                Spans::from(vec![
+                Line::from(vec![
                     Span::styled(
                         format!("{:38}", root.to_string(),),
                         Style::default().fg(if pane_selected && root as u8 == root_selected {
@@ -541,19 +541,19 @@ impl StaticSelection {
                     ),
                 ])
             })
-            .collect::<Vec<Spans>>()
+            .collect::<Vec<Line>>()
     }
 
-    pub fn generate_results(&self) -> Vec<Spans<'static>> {
+    pub fn generate_results(&self) -> Vec<Line<'static>> {
         self.results.lock()
             .iter()
             .map(|result| {
-                Spans::from(vec![Span::styled(
+                Line::from(vec![Span::styled(
                     result.to_string(),
                     Style::default().fg(Color::White),
                 )])
             })
-            .collect::<Vec<Spans>>()
+            .collect::<Vec<Line>>()
     }
 
     pub fn pane_left(&self) {
@@ -723,8 +723,8 @@ impl SearchEditor {
         (self.mode, self.state)
     }
 
-    pub fn render(&self) -> Spans<'static> {
-        Spans::from(vec![Span::styled(
+    pub fn render(&self) -> Line<'static> {
+        Line::from(vec![Span::styled(
             format!("{}", self.state),
             Style::default().fg(Color::White),
         )])
@@ -751,7 +751,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let logfile_layer = tracing_subscriber::fmt::layer()
         .with_line_number(true)
         .with_writer(file_writer)
-        .with_filter(level_filter);
+    .    with_filter(level_filter);
     let subscriber = Registry::default().with(logfile_layer);
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
@@ -967,12 +967,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
             f.render_widget(left_paragraph, bottom_chunks[0]);
 
-            let mut controls: Vec<Spans> = Vec::new();
+            let mut controls: Vec<Line> = Vec::new();
             let running = static_menu_selection.running.load(Ordering::SeqCst);
             let run_control_disabled = static_menu_selection
                 .run_control_temporarily_disabled
                 .load(Ordering::SeqCst);
-            controls.push(Spans::from(Span::styled(
+            controls.push(Line::from(Span::styled(
                 if running {
                     if running && run_control_disabled {
                         "Stopping"
