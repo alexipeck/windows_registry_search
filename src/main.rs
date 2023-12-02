@@ -53,10 +53,12 @@ pub struct WorkerManager {
     no_work_left: Arc<Notify>,
     pub results: Arc<Mutex<HashSet<String>>>,
     pub errors: Arc<Mutex<HashSet<String>>>,
+    stop: Arc<AtomicBool>,
+    stop_notify: Arc<Notify>,
 }
 
 impl WorkerManager {
-    pub fn new(search_terms: Vec<String>, threads_to_use: usize) -> Self {
+    pub fn new(search_terms: Vec<String>, threads_to_use: usize, results: Arc<Mutex<HashSet<String>>>, stop: Arc<AtomicBool>, stop_notify: Arc<Notify>) -> Self {
         Self {
             threads: threads_to_use,
             search_terms: search_terms
@@ -69,8 +71,11 @@ impl WorkerManager {
 
             no_work_left: Arc::new(Notify::new()),
 
-            results: Arc::new(Mutex::new(HashSet::new())),
+            results,
             errors: Arc::new(Mutex::new(HashSet::new())),
+
+            stop,
+            stop_notify,
         }
     }
 
@@ -220,6 +225,11 @@ pub enum Root {
     HkeyLocalMachine = 2,
     HkeyUsers = 3,
     HkeyCurrentConfig = 4,
+    HkeyPerformanceData = 5,
+    HkeyPerformanceText = 6,
+    HkeyPerformanceNLSText = 7,
+    HkeyDynData = 8,
+    HkeyCurrentUserLocalSettings = 9,
 }
 
 impl fmt::Display for Root {
@@ -233,6 +243,11 @@ impl fmt::Display for Root {
                 Self::HkeyLocalMachine => "HKEY_LOCAL_MACHINE",
                 Self::HkeyUsers => "HKEY_USERS",
                 Self::HkeyCurrentConfig => "HKEY_CURRENT_CONFIG",
+                Self::HkeyPerformanceData => "HKEY_PERFORMANCE_DATA",
+                Self::HkeyPerformanceText => "HKEY_PERFORMANCE_TEXT",
+                Self::HkeyPerformanceNLSText => "HKEY_PERFORMANCE_NLSTEXT",
+                Self::HkeyDynData => "HKEY_DYN_DATA",
+                Self::HkeyCurrentUserLocalSettings => "HKEY_CURRENT_USER_LOCAL_SETTINGS",
             }
         )
     }
@@ -241,11 +256,16 @@ impl fmt::Display for Root {
 impl Root {
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
-            0 => Some(Root::HkeyClassesRoot),
-            1 => Some(Root::HkeyCurrentUser),
-            2 => Some(Root::HkeyLocalMachine),
-            3 => Some(Root::HkeyUsers),
-            4 => Some(Root::HkeyCurrentConfig),
+            0 => Some(Self::HkeyClassesRoot),
+            1 => Some(Self::HkeyCurrentUser),
+            2 => Some(Self::HkeyLocalMachine),
+            3 => Some(Self::HkeyUsers),
+            4 => Some(Self::HkeyCurrentConfig),
+            5 => Some(Self::HkeyPerformanceData),
+            6 => Some(Self::HkeyPerformanceText),
+            7 => Some(Self::HkeyPerformanceNLSText),
+            8 => Some(Self::HkeyDynData),
+            9 => Some(Self::HkeyCurrentUserLocalSettings),
             _ => None,
         }
     }
@@ -257,6 +277,11 @@ pub struct SelectedRoots {
     local_machine: bool,
     users: bool,
     current_config: bool,
+    performance_data: bool,
+    performance_text: bool,
+    performance_nls_text: bool,
+    dyn_data: bool,
+    current_user_local_settings: bool,
 }
 
 impl Default for SelectedRoots {
@@ -267,28 +292,33 @@ impl Default for SelectedRoots {
             local_machine: true,
             users: true,
             current_config: false,
+            performance_data: false,
+            performance_text: false,
+            performance_nls_text: false,
+            dyn_data: false,
+            current_user_local_settings: false,
         }
     }
 }
 
 impl SelectedRoots {
-    pub fn export_roots(&self) -> Vec<Root> {
+    pub fn export_roots(&self) -> Vec<RegKey> {
         let mut selected_roots = Vec::new();
 
         if self.classes_root {
-            selected_roots.push(Root::HkeyClassesRoot);
+            selected_roots.push(RegKey::predef(HKEY_CLASSES_ROOT));
         }
         if self.current_user {
-            selected_roots.push(Root::HkeyCurrentUser);
+            selected_roots.push(RegKey::predef(HKEY_CURRENT_USER));
         }
         if self.local_machine {
-            selected_roots.push(Root::HkeyLocalMachine);
+            selected_roots.push(RegKey::predef(HKEY_LOCAL_MACHINE));
         }
         if self.users {
-            selected_roots.push(Root::HkeyUsers);
+            selected_roots.push(RegKey::predef(HKEY_USERS));
         }
         if self.current_config {
-            selected_roots.push(Root::HkeyCurrentConfig);
+            selected_roots.push(RegKey::predef(HKEY_CURRENT_CONFIG));
         }
 
         selected_roots
@@ -301,6 +331,11 @@ impl SelectedRoots {
             Root::HkeyLocalMachine => self.local_machine,
             Root::HkeyUsers => self.users,
             Root::HkeyCurrentConfig => self.current_config,
+            Root::HkeyPerformanceData => self.performance_data,
+            Root::HkeyPerformanceText => self.performance_text,
+            Root::HkeyPerformanceNLSText => self.performance_nls_text,
+            Root::HkeyDynData => self.dyn_data,
+            Root::HkeyCurrentUserLocalSettings => self.current_user_local_settings,
         }
     }
 
@@ -311,6 +346,13 @@ impl SelectedRoots {
             Root::HkeyLocalMachine => self.local_machine = !self.local_machine,
             Root::HkeyUsers => self.users = !self.users,
             Root::HkeyCurrentConfig => self.current_config = !self.current_config,
+            Root::HkeyPerformanceData => self.performance_data = !self.performance_data,
+            Root::HkeyPerformanceText => self.performance_text = !self.performance_text,
+            Root::HkeyPerformanceNLSText => self.performance_nls_text = !self.performance_nls_text,
+            Root::HkeyDynData => self.dyn_data = !self.dyn_data,
+            Root::HkeyCurrentUserLocalSettings => {
+                self.current_user_local_settings = !self.current_user_local_settings
+            }
         }
     }
 }
@@ -392,11 +434,7 @@ impl SearchTermTracker {
             search_terms_len
         };
         let current = self.search_term_selected;
-        self.search_term_selected = if current == 0 {
-            max_index
-        } else {
-            current - 1
-        };
+        self.search_term_selected = if current == 0 { max_index } else { current - 1 };
         self.search_term_last_changed = Instant::now();
     }
 
@@ -428,7 +466,7 @@ impl SearchTermTracker {
             .enumerate()
             .map(|(index, term)| {
                 Spans::from(vec![Span::styled(
-                    format!("{:25}", term.to_string(),),
+                    term.to_string(),
                     Style::default().fg(if pane_selected && index == self.search_term_selected {
                         SELECTION_COLOUR
                     } else {
@@ -454,6 +492,9 @@ pub struct StaticSelection {
     running: Arc<AtomicBool>,
     run_control_temporarily_disabled: Arc<AtomicBool>, //running thread resets this once closed
     stop: Arc<AtomicBool>,                             //running thread resets this once closed
+    stop_notify: Arc<Notify>,
+
+    results: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Default for StaticSelection {
@@ -468,6 +509,8 @@ impl Default for StaticSelection {
             running: Arc::new(AtomicBool::new(false)),
             run_control_temporarily_disabled: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
+            stop_notify: Arc::new(Notify::new()),
+            results: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
@@ -481,7 +524,7 @@ impl StaticSelection {
                 let root_enabled = self.selected_roots.read().is_enabled(&root);
                 Spans::from(vec![
                     Span::styled(
-                        format!("{:25}", root.to_string(),),
+                        format!("{:38}", root.to_string(),),
                         Style::default().fg(if pane_selected && root as u8 == root_selected {
                             SELECTION_COLOUR
                         } else {
@@ -497,6 +540,18 @@ impl StaticSelection {
                         }),
                     ),
                 ])
+            })
+            .collect::<Vec<Spans>>()
+    }
+
+    pub fn generate_results(&self) -> Vec<Spans<'static>> {
+        self.results.lock()
+            .iter()
+            .map(|result| {
+                Spans::from(vec![Span::styled(
+                    result.to_string(),
+                    Style::default().fg(Color::White),
+                )])
             })
             .collect::<Vec<Spans>>()
     }
@@ -568,23 +623,63 @@ impl StaticSelection {
         }
     }
 
-    pub fn toggle_running(&self) {
+    pub async fn toggle_running(&self) {
+        debug!("A");
         if self.running.load(Ordering::SeqCst) {
+            debug!("B");
             self.run_control_temporarily_disabled
                 .store(true, Ordering::SeqCst);
             self.stop.store(true, Ordering::SeqCst);
         } else {
-            //TODO: Start the running thing
-            //dummy runtime running for 5 seconds
+            debug!("C");
+            let roots = self.selected_roots.read().export_roots();
+            let search_terms = self
+                .search_term_tracker
+                .read()
+                .search_terms
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<String>>();
             self.run_control_temporarily_disabled
                 .store(true, Ordering::SeqCst);
             let stop = self.stop.to_owned();
+            let stop_notify = self.stop_notify.to_owned();
             let run_control_temporarily_disabled = self.run_control_temporarily_disabled.to_owned();
             let running = self.running.to_owned();
-            let _ = thread::spawn(move || {
+            let results = self.results.to_owned();
+            debug!("D");
+            let _ = tokio::spawn(async move {
+                debug!("1");
                 running.store(true, Ordering::SeqCst);
+                debug!("2");
                 run_control_temporarily_disabled.store(false, Ordering::SeqCst);
-                thread::sleep(Duration::from_secs(5));
+                debug!("3");
+
+                let worker_manager = Arc::new(WorkerManager::new(search_terms, num_cpus::get(), results, stop.to_owned(), stop_notify));
+
+                debug!("4");
+                worker_manager.feed_queue(vec!["Software".to_string()]);
+                let start_time = Instant::now();
+                debug!("E");
+                worker_manager.run(worker_manager.to_owned()).await;
+                debug!("F");
+
+                /* eprintln!("Errors:");
+                for error in worker_manager.errors.lock().iter() {
+                    eprintln!("{}", error);
+                }
+
+                println!("\nResults:");
+                for result in worker_manager.results.lock().iter() {
+                    println!("{}", result);
+                }
+                println!(
+                    "Key count: {}, Value count: {}",
+                    KEY_COUNT.load(Ordering::SeqCst),
+                    VALUE_COUNT.load(Ordering::SeqCst)
+                ); */
+                info!("Completed in {}ms.", start_time.elapsed().as_millis());
+
                 stop.store(false, Ordering::SeqCst);
                 running.store(false, Ordering::SeqCst);
                 run_control_temporarily_disabled.store(false, Ordering::SeqCst);
@@ -674,126 +769,147 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let stop: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let stop_ = stop.to_owned();
     let focus_ = focus.to_owned();
-    thread::spawn(move || loop {
-        if event::poll(EVENT_POLL_TIMEOUT).unwrap() {
-            if let Ok(CEvent::Key(key)) = event::read() {
-                if let KeyEventKind::Press = key.kind {
-                    let focus = focus_.read().to_owned();
-                    match focus {
-                        Focus::Main => match key.code {
-                            KeyCode::Char('n') => {
-                                *focus_.write() = Focus::SearchMod(Arc::new(RwLock::new(Some(
-                                    SearchEditor::new_add(),
-                                ))))
-                            }
-                            KeyCode::Char('e') => {
-                                if static_menu_selection_event_receiver.pane_selected.load(Ordering::SeqCst) == 1 {
-                                    let (search_terms_is_empty, selected_search_term_value) = {
-                                        let search_term_tracker_lock = static_menu_selection_event_receiver.search_term_tracker.read();
-                                        (search_term_tracker_lock.search_terms.is_empty(), search_term_tracker_lock.get_value_at_current_index())
-                                    };
-                                    if !search_terms_is_empty {
-                                        if let Some(selected_search_term_value) = selected_search_term_value {
-                                            *focus_.write() = Focus::SearchMod(Arc::new(RwLock::new(Some(
-                                                SearchEditor::new_edit(selected_search_term_value),
-                                            ))))
-                                        } else {
-                                            error!("Search terms pane was selected, search terms was not empty, yet somehow there wasn't a value selected.");
+    tokio::spawn(async move {
+        loop {
+            let static_menu_selection_event_receiver =
+                static_menu_selection_event_receiver.to_owned();
+            if event::poll(EVENT_POLL_TIMEOUT).unwrap() {
+                if let Ok(CEvent::Key(key)) = event::read() {
+                    if let KeyEventKind::Press = key.kind {
+                        let focus = focus_.read().to_owned();
+                        match focus {
+                            Focus::Main => match key.code {
+                                KeyCode::Char('n') => {
+                                    *focus_.write() = Focus::SearchMod(Arc::new(RwLock::new(Some(
+                                        SearchEditor::new_add(),
+                                    ))))
+                                }
+                                KeyCode::Char('e') => {
+                                    if static_menu_selection_event_receiver
+                                        .pane_selected
+                                        .load(Ordering::SeqCst)
+                                        == 1
+                                    {
+                                        let (search_terms_is_empty, selected_search_term_value) = {
+                                            let search_term_tracker_lock =
+                                                static_menu_selection_event_receiver
+                                                    .search_term_tracker
+                                                    .read();
+                                            (
+                                                search_term_tracker_lock.search_terms.is_empty(),
+                                                search_term_tracker_lock
+                                                    .get_value_at_current_index(),
+                                            )
+                                        };
+                                        if !search_terms_is_empty {
+                                            if let Some(selected_search_term_value) =
+                                                selected_search_term_value
+                                            {
+                                                *focus_.write() = Focus::SearchMod(Arc::new(
+                                                    RwLock::new(Some(SearchEditor::new_edit(
+                                                        selected_search_term_value,
+                                                    ))),
+                                                ))
+                                            } else {
+                                                error!("Search terms pane was selected, search terms was not empty, yet somehow there wasn't a value selected.");
+                                            }
                                         }
-                                        
                                     }
                                 }
-                            }
-                            KeyCode::Char('h') => *focus_.write() = Focus::Help,
-                            KeyCode::Char('q') | KeyCode::Esc => {
-                                *focus_.write() = Focus::ConfirmClose
-                            }
-                            KeyCode::Left => static_menu_selection_event_receiver.pane_left(),
-                            KeyCode::Right => static_menu_selection_event_receiver.pane_right(),
-                            KeyCode::Up => match static_menu_selection_event_receiver
-                                .pane_selected
-                                .load(Ordering::SeqCst)
-                            {
-                                0 => static_menu_selection_event_receiver.root_up(),
-                                1 => static_menu_selection_event_receiver
-                                    .search_term_tracker
-                                    .write()
-                                    .up(),
-                                2 => {}
+                                KeyCode::Char('h') => *focus_.write() = Focus::Help,
+                                KeyCode::Char('q') | KeyCode::Esc => {
+                                    *focus_.write() = Focus::ConfirmClose
+                                }
+                                KeyCode::Left => static_menu_selection_event_receiver.pane_left(),
+                                KeyCode::Right => static_menu_selection_event_receiver.pane_right(),
+                                KeyCode::Up => match static_menu_selection_event_receiver
+                                    .pane_selected
+                                    .load(Ordering::SeqCst)
+                                {
+                                    0 => static_menu_selection_event_receiver.root_up(),
+                                    1 => static_menu_selection_event_receiver
+                                        .search_term_tracker
+                                        .write()
+                                        .up(),
+                                    2 => {}
+                                    _ => {}
+                                },
+                                KeyCode::Down => match static_menu_selection_event_receiver
+                                    .pane_selected
+                                    .load(Ordering::SeqCst)
+                                {
+                                    0 => static_menu_selection_event_receiver.root_down(),
+                                    1 => static_menu_selection_event_receiver
+                                        .search_term_tracker
+                                        .write()
+                                        .down(),
+                                    2 => {}
+                                    _ => {}
+                                },
+                                KeyCode::Enter => match static_menu_selection_event_receiver
+                                    .pane_selected
+                                    .load(Ordering::SeqCst)
+                                {
+                                    0 => static_menu_selection_event_receiver.root_toggle(),
+                                    1 => {}
+                                    2 => {}
+                                    _ => {}
+                                },
+                                KeyCode::F(5) => {
+                                    debug!("Triggered run start");
+                                    static_menu_selection_event_receiver.toggle_running().await;
+                                }
                                 _ => {}
                             },
-                            KeyCode::Down => match static_menu_selection_event_receiver
-                                .pane_selected
-                                .load(Ordering::SeqCst)
-                            {
-                                0 => static_menu_selection_event_receiver.root_down(),
-                                1 => static_menu_selection_event_receiver
-                                    .search_term_tracker
-                                    .write()
-                                    .down(),
-                                2 => {}
-                                _ => {}
-                            },
-                            KeyCode::Enter => match static_menu_selection_event_receiver
-                                .pane_selected
-                                .load(Ordering::SeqCst)
-                            {
-                                0 => static_menu_selection_event_receiver.root_toggle(),
-                                1 => {}
-                                2 => {}
-                                _ => {}
-                            },
-                            KeyCode::F(5) => static_menu_selection_event_receiver.toggle_running(),
-                            _ => {}
-                        },
-                        Focus::SearchMod(search_editor) => match key.code {
-                            KeyCode::Backspace => {
-                                search_editor.write().as_mut().unwrap().backspace()
-                            }
-                            KeyCode::Char(ch) => {
-                                search_editor.write().as_mut().unwrap().add_char(ch)
-                            }
-                            KeyCode::Esc => *focus_.write() = Focus::Main,
-                            KeyCode::Enter => {
-                                let mut focus_lock = focus_.write(); //this lock must be held until the end of this scope
-                                let mut search_editor_lock = search_editor.write(); //it is imperitive that nothing tries to read this lock after this write cycle, it should be safe
-                                let probably_search_editor = search_editor_lock.take();
-                                *focus_lock = Focus::Main;
-                                let search_editor = match probably_search_editor {
-                                    Some(search_editor) => search_editor,
-                                    None => {
-                                        error!("Write proper error here, this shouldn't be possible as this loop runthrough is the only place that can both run a write lock on search_editor or focus.");
-                                        continue;
-                                    }
-                                };
-                                let (editor_mode, state) = search_editor.resolve();
-                                static_menu_selection_event_receiver
+                            Focus::SearchMod(search_editor) => match key.code {
+                                KeyCode::Backspace => {
+                                    search_editor.write().as_mut().unwrap().backspace()
+                                }
+                                KeyCode::Char(ch) => {
+                                    search_editor.write().as_mut().unwrap().add_char(ch)
+                                }
+                                KeyCode::Esc => *focus_.write() = Focus::Main,
+                                KeyCode::Enter => {
+                                    let mut focus_lock = focus_.write(); //this lock must be held until the end of this scope
+                                    let mut search_editor_lock = search_editor.write(); //it is imperitive that nothing tries to read this lock after this write cycle, it should be safe
+                                    let probably_search_editor = search_editor_lock.take();
+                                    *focus_lock = Focus::Main;
+                                    let search_editor = match probably_search_editor {
+                                        Some(search_editor) => search_editor,
+                                        None => {
+                                            error!("Write proper error here, this shouldn't be possible as this loop runthrough is the only place that can both run a write lock on search_editor or focus.");
+                                            continue;
+                                        }
+                                    };
+                                    let (editor_mode, state) = search_editor.resolve();
+                                    static_menu_selection_event_receiver
                                         .search_term_tracker
                                         .write()
                                         .update(editor_mode, state);
-                            }
-                            _ => {}
-                        },
-                        Focus::Help => match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => {
-                                *focus_.write() = Focus::Main
-                            }
-                            _ => {}
-                        },
-                        Focus::ConfirmClose => match key.code {
-                            KeyCode::Esc | KeyCode::Char('n') => {
-                                *focus_.write() = Focus::Main;
-                            }
-                            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('q') => {
-                                stop_.store(true, Ordering::SeqCst);
-                                break;
-                            }
-                            _ => {}
-                        },
+                                }
+                                _ => {}
+                            },
+                            Focus::Help => match key.code {
+                                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') => {
+                                    *focus_.write() = Focus::Main
+                                }
+                                _ => {}
+                            },
+                            Focus::ConfirmClose => match key.code {
+                                KeyCode::Esc | KeyCode::Char('n') => {
+                                    *focus_.write() = Focus::Main;
+                                }
+                                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('q') => {
+                                    stop_.store(true, Ordering::SeqCst);
+                                    break;
+                                }
+                                _ => {}
+                            },
+                        }
                     }
                 }
+            } else {
             }
-        } else {
         }
     });
 
@@ -911,7 +1027,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .wrap(Wrap { trim: true });
             f.render_widget(controls_paragraph, middle_column[1]);
 
-            let right_text = Text::from("Results will be shown here.");
+            let right_text = Text::from(static_menu_selection.generate_results());
             let right_paragraph = Paragraph::new(right_text).block(
                 Block::default()
                     .title(Span::styled("Results", Style::default().fg(Color::White)))
@@ -1001,22 +1117,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
     terminal.show_cursor()?;
 
-    /* let worker_manager = Arc::new(WorkerManager::new(vec!["Google Chrome".to_string(), "7-Zip".to_string()], num_cpus::get()));
-
-    worker_manager.feed_queue(vec!["Software".to_string()]);
-    let start_time = Instant::now();
-    worker_manager.run(worker_manager.to_owned()).await;
-
-    eprintln!("Errors:");
-    for error in worker_manager.errors.lock().iter() {
-        eprintln!("{}", error);
-    }
-
-    println!("\nResults:");
-    for result in worker_manager.results.lock().iter() {
-        println!("{}", result);
-    }
-    println!("Key count: {}, Value count: {}", KEY_COUNT.load(Ordering::SeqCst), VALUE_COUNT.load(Ordering::SeqCst));
-    println!("Completed in {}ms.", start_time.elapsed().as_millis()); */
     Ok(())
 }
