@@ -3,7 +3,7 @@ use crossterm::event::{self, KeyEventKind, KeyCode};
 use parking_lot::RwLock;
 use crossterm::event::Event as CEvent;
 use tracing::{error, debug};
-use crate::{static_selection::{StaticSelection, toggle_running}, EVENT_POLL_TIMEOUT, Focus, search_editor::SearchEditor, function_to_solve_a_dumb_problem};
+use crate::{static_selection::{StaticSelection, toggle_running}, EVENT_POLL_TIMEOUT, Focus, search_editor::SearchEditor};
 
 
 pub async fn controls(static_menu_selection: Arc<StaticSelection>, focus: Arc<RwLock<Focus>>, stop: Arc<AtomicBool>) {
@@ -93,14 +93,7 @@ pub async fn controls(static_menu_selection: Arc<StaticSelection>, focus: Arc<Rw
                             },
                             KeyCode::F(5) => {
                                 debug!("Triggered run start");
-                                let not_first_run = function_to_solve_a_dumb_problem();
-                                debug!("{}", not_first_run);
-                                toggle_running(static_menu_selection.to_owned(), not_first_run).await;
-                                if !not_first_run {
-                                    let not_first_run = function_to_solve_a_dumb_problem();
-                                    debug!("{}", not_first_run);
-                                    toggle_running(static_menu_selection.to_owned(), not_first_run).await;
-                                }
+                                toggle_running(static_menu_selection.to_owned()).await;
                             }
                             _ => {}
                         },

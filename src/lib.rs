@@ -18,23 +18,6 @@ pub const DEBOUNCE: Duration = Duration::from_millis(100);
 pub const EVENT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 pub const SELECTION_COLOUR: Color = Color::Cyan;
 
-static SYSTEM_TO_SOLVE_A_DUMB_PROBLEM_TRIPPED: Mutex<bool> = Mutex::new(false);
-static SYSTEM_TO_SOLVE_A_DUMB_PROBLEM_ALL_CLEAR: AtomicBool = AtomicBool::new(false);
-
-pub fn function_to_solve_a_dumb_problem() -> bool {
-    if !SYSTEM_TO_SOLVE_A_DUMB_PROBLEM_ALL_CLEAR.load(Ordering::SeqCst) {
-        let mut lock = SYSTEM_TO_SOLVE_A_DUMB_PROBLEM_TRIPPED.lock();
-        let tripped = *lock;
-        if !tripped {
-            *lock = true;
-            SYSTEM_TO_SOLVE_A_DUMB_PROBLEM_ALL_CLEAR.store(true, Ordering::SeqCst);
-            return false;
-        }
-        return true;
-    }
-    true
-}
-
 static KEY_COUNT: AtomicUsize = AtomicUsize::new(0);
 static VALUE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HKLM: RegKey = RegKey::predef(HKEY_LOCAL_MACHINE);

@@ -163,27 +163,27 @@ impl WorkerManager {
         }
         false
     }
+}
 
-    pub async fn run(worker_manager: Arc<WorkerManager>) {
-        for _ in 0..worker_manager.threads {
-            let worker_manager = worker_manager.to_owned();
-            tokio::spawn(run_thread(worker_manager));
-        }
-        worker_manager.work_ready_for_processing.notify_waiters();
-        loop {
-            if worker_manager
-                .threads_waiting_for_work
-                .load(Ordering::SeqCst)
-                == worker_manager.threads
-            {
-                if worker_manager.key_queue.lock().len() == 0 {
-                    worker_manager.no_work_left.notify_waiters();
-                    break;
-                } else {
-                    worker_manager.work_ready_for_processing.notify_waiters();
-                }
+pub async fn run(worker_manager: Arc<WorkerManager>) {
+    for _ in 0..worker_manager.threads {
+        let worker_manager = worker_manager.to_owned();
+        tokio::spawn(run_thread(worker_manager));
+    }
+    worker_manager.work_ready_for_processing.notify_waiters();
+    loop {
+        if worker_manager
+            .threads_waiting_for_work
+            .load(Ordering::SeqCst)
+            == worker_manager.threads
+        {
+            if worker_manager.key_queue.lock().len() == 0 {
+                worker_manager.no_work_left.notify_waiters();
+                break;
+            } else {
+                worker_manager.work_ready_for_processing.notify_waiters();
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
