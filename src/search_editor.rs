@@ -1,7 +1,9 @@
-use ratatui::{text::{Line, Span}, style::{Style, Color}};
+use ratatui::{
+    style::{Color, Style},
+    text::{Line, Span},
+};
 
 use crate::EditorMode;
-
 
 #[derive(Debug, Clone)]
 pub struct SearchEditor {

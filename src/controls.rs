@@ -1,12 +1,21 @@
-use std::sync::{Arc, atomic::{Ordering, AtomicBool}};
-use crossterm::event::{self, KeyEventKind, KeyCode};
-use parking_lot::RwLock;
+use crate::{
+    search_editor::SearchEditor, static_selection::StaticSelection, Focus, EVENT_POLL_TIMEOUT,
+};
 use crossterm::event::Event as CEvent;
-use tracing::{error, debug};
-use crate::{static_selection::{StaticSelection, toggle_running}, EVENT_POLL_TIMEOUT, Focus, search_editor::SearchEditor};
+use crossterm::event::{self, KeyCode, KeyEventKind};
+use parking_lot::RwLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use tracing::{debug, error};
 
-
-pub async fn controls(static_menu_selection: Arc<StaticSelection>, focus: Arc<RwLock<Focus>>, stop: Arc<AtomicBool>) {
+pub fn controls(
+    static_menu_selection: Arc<StaticSelection>,
+    focus: Arc<RwLock<Focus>>,
+    stop: Arc<AtomicBool>,
+    tx: tokio::sync::mpsc::Sender<()>,
+) {
     loop {
         let static_menu_selection = static_menu_selection.to_owned();
         if event::poll(EVENT_POLL_TIMEOUT).unwrap() {
@@ -21,20 +30,13 @@ pub async fn controls(static_menu_selection: Arc<StaticSelection>, focus: Arc<Rw
                                 ))))
                             }
                             KeyCode::Char('e') => {
-                                if static_menu_selection
-                                    .pane_selected
-                                    .load(Ordering::SeqCst)
-                                    == 1
-                                {
+                                if static_menu_selection.pane_selected.load(Ordering::SeqCst) == 1 {
                                     let (search_terms_is_empty, selected_search_term_value) = {
                                         let search_term_tracker_lock =
-                                            static_menu_selection
-                                                .search_term_tracker
-                                                .read();
+                                            static_menu_selection.search_term_tracker.read();
                                         (
                                             search_term_tracker_lock.search_terms.is_empty(),
-                                            search_term_tracker_lock
-                                                .get_value_at_current_index(),
+                                            search_term_tracker_lock.get_value_at_current_index(),
                                         )
                                     };
                                     if !search_terms_is_empty {
@@ -58,42 +60,33 @@ pub async fn controls(static_menu_selection: Arc<StaticSelection>, focus: Arc<Rw
                             }
                             KeyCode::Left => static_menu_selection.pane_left(),
                             KeyCode::Right => static_menu_selection.pane_right(),
-                            KeyCode::Up => match static_menu_selection
-                                .pane_selected
-                                .load(Ordering::SeqCst)
-                            {
-                                0 => static_menu_selection.root_up(),
-                                1 => static_menu_selection
-                                    .search_term_tracker
-                                    .write()
-                                    .up(),
-                                2 => {}
-                                _ => {}
-                            },
-                            KeyCode::Down => match static_menu_selection
-                                .pane_selected
-                                .load(Ordering::SeqCst)
-                            {
-                                0 => static_menu_selection.root_down(),
-                                1 => static_menu_selection
-                                    .search_term_tracker
-                                    .write()
-                                    .down(),
-                                2 => {}
-                                _ => {}
-                            },
-                            KeyCode::Enter => match static_menu_selection
-                                .pane_selected
-                                .load(Ordering::SeqCst)
-                            {
-                                0 => static_menu_selection.root_toggle(),
-                                1 => {}
-                                2 => {}
-                                _ => {}
-                            },
+                            KeyCode::Up => {
+                                match static_menu_selection.pane_selected.load(Ordering::SeqCst) {
+                                    0 => static_menu_selection.root_up(),
+                                    1 => static_menu_selection.search_term_tracker.write().up(),
+                                    2 => {}
+                                    _ => {}
+                                }
+                            }
+                            KeyCode::Down => {
+                                match static_menu_selection.pane_selected.load(Ordering::SeqCst) {
+                                    0 => static_menu_selection.root_down(),
+                                    1 => static_menu_selection.search_term_tracker.write().down(),
+                                    2 => {}
+                                    _ => {}
+                                }
+                            }
+                            KeyCode::Enter => {
+                                match static_menu_selection.pane_selected.load(Ordering::SeqCst) {
+                                    0 => static_menu_selection.root_toggle(),
+                                    1 => {}
+                                    2 => {}
+                                    _ => {}
+                                }
+                            }
                             KeyCode::F(5) => {
                                 debug!("Triggered run start");
-                                toggle_running(static_menu_selection.to_owned()).await;
+                                tx.blocking_send(()).expect("Failed to send trigger");
                             }
                             _ => {}
                         },

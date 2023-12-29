@@ -11,8 +11,8 @@ use std::{
 
 use tokio::sync::Notify;
 
+use crate::{HKLM, KEY_COUNT, REGEDIT_OUTPUT_FOR_BLANK_NAMES, VALUE_COUNT};
 use winreg::enums::*;
-use crate::{KEY_COUNT, HKLM, REGEDIT_OUTPUT_FOR_BLANK_NAMES, VALUE_COUNT};
 
 pub async fn run_thread(worker_manager: Arc<WorkerManager>) {
     loop {
@@ -43,7 +43,13 @@ pub struct WorkerManager {
 }
 
 impl WorkerManager {
-    pub fn new(search_terms: Vec<String>, threads_to_use: usize, results: Arc<Mutex<HashSet<String>>>, stop: Arc<AtomicBool>, stop_notify: Arc<Notify>) -> Self {
+    pub fn new(
+        search_terms: Vec<String>,
+        threads_to_use: usize,
+        results: Arc<Mutex<HashSet<String>>>,
+        stop: Arc<AtomicBool>,
+        stop_notify: Arc<Notify>,
+    ) -> Self {
         Self {
             threads: threads_to_use,
             search_terms: search_terms

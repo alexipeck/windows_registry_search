@@ -1,10 +1,12 @@
-use std::{time::Instant, collections::BTreeSet};
+use std::{collections::BTreeSet, time::Instant};
 
-use ratatui::{text::{Span, Line}, style::{Style, Color}};
-use tracing::{error, debug};
+use ratatui::{
+    style::{Color, Style},
+    text::{Line, Span},
+};
+use tracing::{debug, error};
 
 use crate::{EditorMode, DEBOUNCE, SELECTION_COLOUR};
-
 
 pub struct SearchTermTracker {
     pub search_term_selected: usize,

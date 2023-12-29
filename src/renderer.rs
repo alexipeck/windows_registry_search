@@ -1,24 +1,53 @@
-use std::{io, sync::{atomic::{Ordering, AtomicBool}, Arc}, error::Error};
+use std::{
+    error::Error,
+    io,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
-use crossterm::{terminal::{enable_raw_mode, EnterAlternateScreen, disable_raw_mode, LeaveAlternateScreen}, execute, event::{EnableMouseCapture, DisableMouseCapture}};
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use parking_lot::RwLock;
-use ratatui::{backend::CrosstermBackend, Terminal, layout::{Layout, Direction, Constraint}, widgets::{Paragraph, Block, Wrap, Borders}, text::{Span, Line, Text}, style::{Color, Style}};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Paragraph, Wrap},
+    Terminal,
+};
 use tracing::error;
 
-use crate::{SELECTION_COLOUR, static_selection::StaticSelection, Focus};
+use crate::{static_selection::StaticSelection, Focus, SELECTION_COLOUR};
 
-pub async fn renderer_wrappers_wrapper(static_menu_selection: Arc<StaticSelection>, focus: Arc<RwLock<Focus>>, stop: Arc<AtomicBool>) -> Result<(), ()> {
-    match renderer_wrapper(static_menu_selection.to_owned(), focus.to_owned(), stop.to_owned()).await {
+pub fn renderer_wrappers_wrapper(
+    static_menu_selection: Arc<StaticSelection>,
+    focus: Arc<RwLock<Focus>>,
+    stop: Arc<AtomicBool>,
+) -> Result<(), ()> {
+    match renderer_wrapper(
+        static_menu_selection.to_owned(),
+        focus.to_owned(),
+        stop.to_owned(),
+    ) {
         Ok(_) => return Ok(()),
         Err(err) => {
             error!("{}", err);
-            return Err(())
+            return Err(());
         }
     }
-    
 }
 
-pub async fn renderer_wrapper(static_menu_selection: Arc<StaticSelection>, focus: Arc<RwLock<Focus>>, stop: Arc<AtomicBool>) -> Result<(), Box<dyn Error>> {
+pub fn renderer_wrapper(
+    static_menu_selection: Arc<StaticSelection>,
+    focus: Arc<RwLock<Focus>>,
+    stop: Arc<AtomicBool>,
+) -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -26,7 +55,12 @@ pub async fn renderer_wrapper(static_menu_selection: Arc<StaticSelection>, focus
     let mut terminal: Terminal<CrosstermBackend<io::Stdout>> = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let renderer_result = renderer(&mut terminal, static_menu_selection.to_owned(), focus.to_owned(), stop.to_owned()).await;
+    let renderer_result = renderer(
+        &mut terminal,
+        static_menu_selection.to_owned(),
+        focus.to_owned(),
+        stop.to_owned(),
+    );
 
     disable_raw_mode()?;
     execute!(
@@ -38,7 +72,12 @@ pub async fn renderer_wrapper(static_menu_selection: Arc<StaticSelection>, focus
     renderer_result
 }
 
-pub async fn renderer(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, static_menu_selection: Arc<StaticSelection>, focus: Arc<RwLock<Focus>>, stop: Arc<AtomicBool>) -> Result<(), Box<dyn Error>> {
+pub fn renderer(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    static_menu_selection: Arc<StaticSelection>,
+    focus: Arc<RwLock<Focus>>,
+    stop: Arc<AtomicBool>,
+) -> Result<(), Box<dyn Error>> {
     loop {
         if stop.load(Ordering::SeqCst) {
             break;
