@@ -30,7 +30,7 @@ pub struct StaticSelection {
 
     pub selected_roots: Arc<RwLock<SelectedRoots>>,
 
-    pub running: Arc<AtomicBool>,
+    pub running: Arc<Mutex<bool>>,
     pub run_control_temporarily_disabled: Arc<AtomicBool>, //running thread resets this once closed
     pub stop: Arc<AtomicBool>,                             //running thread resets this once closed
     pub stop_notify: Arc<Notify>,
@@ -47,7 +47,7 @@ impl Default for StaticSelection {
             root_selection_last_changed: Arc::new(Mutex::new(Instant::now())),
             search_term_tracker: Arc::new(RwLock::new(SearchTermTracker::default())),
             selected_roots: Arc::new(RwLock::new(SelectedRoots::default())),
-            running: Arc::new(AtomicBool::new(false)),
+            running: Arc::new(Mutex::new(false)),
             run_control_temporarily_disabled: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
             stop_notify: Arc::new(Notify::new()),

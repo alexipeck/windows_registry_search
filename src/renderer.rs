@@ -147,7 +147,7 @@ pub fn renderer(
             f.render_widget(left_paragraph, bottom_chunks[0]);
 
             let mut controls: Vec<Line> = Vec::new();
-            let running = static_menu_selection.running.load(Ordering::SeqCst);
+            let running = *static_menu_selection.running.lock();
             let run_control_disabled = static_menu_selection
                 .run_control_temporarily_disabled
                 .load(Ordering::SeqCst);

@@ -85,8 +85,17 @@ pub fn controls(
                                 }
                             }
                             KeyCode::F(5) => {
-                                debug!("Triggered run start");
-                                tx.blocking_send(()).expect("Failed to send trigger");
+                                debug!("Triggered run start/stop");
+                                let mut running_lock = static_menu_selection.running.lock();
+                                if *running_lock {
+                                    static_menu_selection
+                                        .run_control_temporarily_disabled
+                                        .store(true, Ordering::SeqCst);
+                                    static_menu_selection.stop.store(true, Ordering::SeqCst);
+                                } else {
+                                    *running_lock = true;
+                                    tx.blocking_send(()).expect("Failed to send trigger");
+                                }
                             }
                             _ => {}
                         },

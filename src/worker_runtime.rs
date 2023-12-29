@@ -3,6 +3,7 @@ use tracing::{debug, info};
 use crate::{
     static_selection::StaticSelection,
     worker_manager::{run, WorkerManager},
+    KEY_COUNT, VALUE_COUNT,
 };
 use std::{
     sync::{
@@ -28,65 +29,45 @@ pub async fn worker_runtime(
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        if static_menu_selection.running.load(Ordering::SeqCst) {
-            static_menu_selection
-                .run_control_temporarily_disabled
-                .store(true, Ordering::SeqCst);
-            static_menu_selection.stop.store(true, Ordering::SeqCst);
-        } else {
-            let roots = static_menu_selection.selected_roots.read().export_roots();
-            let search_terms = static_menu_selection
-                .search_term_tracker
-                .read()
-                .search_terms
-                .iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<String>>();
-            static_menu_selection
-                .run_control_temporarily_disabled
-                .store(true, Ordering::SeqCst);
-            let stop = static_menu_selection.stop.to_owned();
-            let stop_notify = static_menu_selection.stop_notify.to_owned();
-            let run_control_temporarily_disabled = static_menu_selection
-                .run_control_temporarily_disabled
-                .to_owned();
-            let running = static_menu_selection.running.to_owned();
-            let results = static_menu_selection.results.to_owned();
-            running.store(true, Ordering::SeqCst);
-            run_control_temporarily_disabled.store(false, Ordering::SeqCst);
+        KEY_COUNT.store(0, Ordering::SeqCst);
+        VALUE_COUNT.store(0, Ordering::SeqCst);
 
-            let worker_manager = Arc::new(WorkerManager::new(
-                search_terms,
-                num_cpus::get(),
-                results,
-                stop.to_owned(),
-                stop_notify,
-            ));
+        let roots = static_menu_selection.selected_roots.read().export_roots();
+        let search_terms = static_menu_selection
+            .search_term_tracker
+            .read()
+            .search_terms
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<String>>();
+        let worker_manager = Arc::new(WorkerManager::new(
+            search_terms,
+            num_cpus::get(),
+            static_menu_selection.results.to_owned(),
+            static_menu_selection.stop.to_owned(),
+            static_menu_selection.stop_notify.to_owned(),
+        ));
 
-            worker_manager.feed_queue(vec!["Software".to_string()]);
-            let start_time = Instant::now();
-            run(worker_manager.to_owned()).await;
+        worker_manager.feed_queue(vec!["Software".to_string()]);
+        let start_time = Instant::now();
+        run(worker_manager.to_owned()).await;
 
-            /* eprintln!("Errors:");
-            for error in worker_manager.errors.lock().iter() {
-                eprintln!("{}", error);
-            }
-
-            println!("\nResults:");
-            for result in worker_manager.results.lock().iter() {
-                println!("{}", result);
-            }
-            println!(
-                "Key count: {}, Value count: {}",
-                KEY_COUNT.load(Ordering::SeqCst),
-                VALUE_COUNT.load(Ordering::SeqCst)
-            ); */
-            info!("Completed in {}ms.", start_time.elapsed().as_millis());
-
-            stop.store(false, Ordering::SeqCst);
-            running.store(false, Ordering::SeqCst);
-            run_control_temporarily_disabled.store(false, Ordering::SeqCst);
+        /* eprintln!("Errors:");
+        for error in worker_manager.errors.lock().iter() {
+            eprintln!("{}", error);
         }
+
+        println!("\nResults:");
+        for result in worker_manager.results.lock().iter() {
+            println!("{}", result);
+        } */
+        info!("Completed in {}ms.", start_time.elapsed().as_millis());
+
+        static_menu_selection.stop.store(false, Ordering::SeqCst);
+        *static_menu_selection.running.lock() = false;
+        static_menu_selection
+            .run_control_temporarily_disabled
+            .store(false, Ordering::SeqCst);
     }
     debug!("Worker thread closed.");
 }
