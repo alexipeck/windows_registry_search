@@ -16,7 +16,7 @@ use parking_lot::RwLock;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
@@ -89,29 +89,46 @@ pub fn renderer(
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(1), Constraint::Max(100)].as_ref())
                 .split(f.size());
+            let running = *static_menu_selection.running.lock();
+            let run_control_disabled = static_menu_selection
+                .run_control_temporarily_disabled
+                .load(Ordering::SeqCst);
             let top_paragraph = Paragraph::new(
-                vec![
-                    "H for the Help menu",
-                    "Arrow keys for navigation",
-                    "Enter to select/toggle",
-                    "Page up/down for first/last element",
-                    "F5 Start/Stop",
-                    &format!(
-                        "Key count: {}",
-                        KEY_COUNT.load(Ordering::SeqCst).to_string().as_str()
+                Line::from(vec![
+                    Span::raw("[H for the Help menu]"),
+                    Span::raw(" "),
+                    Span::raw("[Arrow keys for navigation]"),
+                    Span::raw(" "),
+                    Span::raw("[Enter to select/toggle]"),
+                    Span::raw(" "),
+                    Span::raw("[Page up/down for first/last element]"),
+                    Span::raw(" "),
+                    Span::raw("[F5 "),
+                    Span::styled(
+                        if running {
+                            if running && run_control_disabled {
+                                "Stopping"
+                            } else {
+                                "Stop"
+                            }
+                        } else {
+                            "Start"
+                        },
+                        Style::default().fg(if running && !run_control_disabled {
+                            Color::Green
+                        } else if running && run_control_disabled {
+                            Color::Red
+                        } else {
+                            Color::Green
+                        }),
                     ),
-                    &format!(
-                        "Value count: {}",
-                        VALUE_COUNT.load(Ordering::SeqCst).to_string().as_str()
-                    ),
-                    &format!(
-                        "Results count: {}",
-                        static_menu_selection.results.lock().len()
-                    ),
-                ]
-                .iter()
-                .map(|&tip| format!("[{}] ", tip))
-                .collect::<String>(),
+                    Span::raw("] "),
+                    Span::raw(format!("[Key count: {}]", KEY_COUNT.load(Ordering::SeqCst))),
+                    Span::raw(" "),
+                    Span::raw(format!("[Value count: {}]", VALUE_COUNT.load(Ordering::SeqCst))),
+                    Span::raw(" "),
+                    Span::raw(format!("[Results count: {}]", static_menu_selection.results.lock().len())),
+                ])
             )
             .block(Block::default())
             .wrap(Wrap { trim: true });
@@ -121,20 +138,29 @@ pub fn renderer(
                 .margin(1)
                 .constraints(
                     [
-                        Constraint::Percentage(20), // Selection
-                        Constraint::Percentage(20), // Controls
-                        Constraint::Percentage(60), // Results
+                        Constraint::Percentage(20), // Selection & Search Terms
+                        Constraint::Percentage(80), // Results
                     ]
                     .as_ref(),
                 )
                 .split(chunks[1]);
+            let left_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(
+                    [
+                        Constraint::Percentage(25), // Selection
+                        Constraint::Percentage(75), // Search Terms
+                    ]
+                    .as_ref(),
+                )
+                .split(bottom_chunks[0]);
 
             let pane_selected = static_menu_selection.pane_selected.load(Ordering::SeqCst);
 
-            let left_paragraph = Paragraph::new(static_menu_selection.generate_root_list()).block(
+            let roots_paragraph = Paragraph::new(static_menu_selection.generate_root_list()).block(
                 Block::default()
                     .title(Span::styled(
-                        "Root Selection",
+                        "1. Root Selection",
                         Style::default().fg(Color::White),
                     ))
                     .borders(Borders::ALL)
@@ -144,36 +170,6 @@ pub fn renderer(
                         Color::White
                     })),
             );
-            f.render_widget(left_paragraph, bottom_chunks[0]);
-
-            let mut controls: Vec<Line> = Vec::new();
-            let running = *static_menu_selection.running.lock();
-            let run_control_disabled = static_menu_selection
-                .run_control_temporarily_disabled
-                .load(Ordering::SeqCst);
-            controls.push(Line::from(Span::styled(
-                if running {
-                    if running && run_control_disabled {
-                        "Stopping"
-                    } else {
-                        "Stop"
-                    }
-                } else {
-                    "Start"
-                },
-                Style::default().fg(if running && !run_control_disabled {
-                    Color::Green
-                } else if running && run_control_disabled {
-                    Color::Red
-                } else {
-                    Color::White
-                }),
-            )));
-
-            let middle_column = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(92), Constraint::Percentage(8)].as_ref())
-                .split(bottom_chunks[1]);
 
             let search_terms_paragraph = Paragraph::new(
                 static_menu_selection
@@ -184,7 +180,7 @@ pub fn renderer(
             .block(
                 Block::default()
                     .title(Span::styled(
-                        "Search Terms",
+                        "2. Search Terms",
                         Style::default().fg(Color::White),
                     ))
                     .borders(Borders::ALL)
@@ -195,21 +191,14 @@ pub fn renderer(
                     })),
             )
             .wrap(Wrap { trim: true });
-            f.render_widget(search_terms_paragraph, middle_column[0]);
-            let controls_paragraph = Paragraph::new(controls)
-                .block(
-                    Block::default()
-                        .title(Span::styled("Controls", Style::default().fg(Color::White)))
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::White)),
-                )
-                .wrap(Wrap { trim: true });
-            f.render_widget(controls_paragraph, middle_column[1]);
+
+            f.render_widget(roots_paragraph, left_chunks[0]);
+            f.render_widget(search_terms_paragraph, left_chunks[1]);
 
             let right_text = Text::from(static_menu_selection.generate_results());
             let right_paragraph = Paragraph::new(right_text).block(
                 Block::default()
-                    .title(Span::styled("Results", Style::default().fg(Color::White)))
+                    .title(Span::styled("3. Results", Style::default().fg(Color::White)))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(if pane_selected == 2 {
                         SELECTION_COLOUR
@@ -217,7 +206,7 @@ pub fn renderer(
                         Color::White
                     })),
             );
-            f.render_widget(right_paragraph, bottom_chunks[2]);
+            f.render_widget(right_paragraph, bottom_chunks[1]);
 
             //Renders overlay
             let focus = focus.read().to_owned();
@@ -277,7 +266,7 @@ pub fn renderer(
                                     ))
                                     .style(Style::default().bg(Color::DarkGray))
                                     .borders(Borders::ALL)
-                                    .border_style(Style::default().fg(Color::White)),
+                                    .border_style(Style::default().fg(Color::White))
                             )
                         }
                         Focus::Main => panic!(), //this case will never run

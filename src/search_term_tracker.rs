@@ -76,7 +76,7 @@ impl SearchTermTracker {
             return;
         }
         let search_terms_len = self.search_terms.len();
-        if search_terms_len == 0 {
+        if search_terms_len == 0 || search_terms_len == 1 {
             return;
         }
         let max_index: usize = if search_terms_len > 1 {
@@ -94,7 +94,7 @@ impl SearchTermTracker {
             return;
         }
         let search_terms_len = self.search_terms.len();
-        if search_terms_len == 0 {
+        if search_terms_len == 0 || search_terms_len == 1 {
             return;
         }
         let max_index: usize = if search_terms_len > 1 {

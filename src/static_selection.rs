@@ -130,13 +130,11 @@ impl StaticSelection {
         if self.root_selection_last_changed.lock().elapsed() < DEBOUNCE {
             return;
         }
-        let new_value = match self.root_selected.load(Ordering::SeqCst) {
-            0 => 4,
-            1 => 0,
-            2 => 1,
-            3 => 2,
-            4 => 3,
-            _ => return,
+        let current_value = self.root_selected.load(Ordering::SeqCst);
+        let new_value = if current_value == 0 {
+            9
+        } else {
+            current_value - 1
         };
         self.root_selected.store(new_value, Ordering::SeqCst);
         *self.root_selection_last_changed.lock() = Instant::now();
@@ -146,14 +144,7 @@ impl StaticSelection {
         if self.root_selection_last_changed.lock().elapsed() < DEBOUNCE {
             return;
         }
-        let new_value = match self.root_selected.load(Ordering::SeqCst) {
-            0 => 1,
-            1 => 2,
-            2 => 3,
-            3 => 4,
-            4 => 0,
-            _ => return,
-        };
+        let new_value = (self.root_selected.load(Ordering::SeqCst) + 1) % 10;
         self.root_selected.store(new_value, Ordering::SeqCst);
         *self.root_selection_last_changed.lock() = Instant::now();
     }
