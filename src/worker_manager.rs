@@ -1,6 +1,6 @@
 use parking_lot::Mutex;
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{BTreeSet, HashSet, VecDeque},
     error::Error,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -36,7 +36,7 @@ pub struct WorkerManager {
     work_ready_for_processing: Arc<Notify>,
     threads_waiting_for_work: Arc<AtomicUsize>,
     no_work_left: Arc<Notify>,
-    pub results: Arc<Mutex<HashSet<String>>>,
+    pub results: Arc<Mutex<BTreeSet<String>>>,
     pub errors: Arc<Mutex<HashSet<String>>>,
     stop: Arc<AtomicBool>,
     stop_notify: Arc<Notify>,
@@ -46,7 +46,7 @@ impl WorkerManager {
     pub fn new(
         search_terms: Vec<String>,
         threads_to_use: usize,
-        results: Arc<Mutex<HashSet<String>>>,
+        results: Arc<Mutex<BTreeSet<String>>>,
         stop: Arc<AtomicBool>,
         stop_notify: Arc<Notify>,
     ) -> Self {

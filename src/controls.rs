@@ -129,9 +129,8 @@ pub fn controls(
                                 *focus.write() = Focus::Main;
                             }
                             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('q') => {
-                                debug!("Stop is about to be stored.");
                                 stop.store(true, Ordering::SeqCst);
-                                debug!("Stop just finished being stored.");
+                                drop(tx);
                                 break;
                             }
                             _ => {}

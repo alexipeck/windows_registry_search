@@ -23,18 +23,20 @@ use ratatui::{
 };
 use tracing::error;
 
-use crate::{static_selection::StaticSelection, Focus, SELECTION_COLOUR};
+use crate::{static_selection::StaticSelection, Focus, KEY_COUNT, SELECTION_COLOUR, VALUE_COUNT};
 
 pub fn renderer_wrappers_wrapper(
     static_menu_selection: Arc<StaticSelection>,
     focus: Arc<RwLock<Focus>>,
     stop: Arc<AtomicBool>,
 ) -> Result<(), ()> {
-    match renderer_wrapper(
+    let result = renderer_wrapper(
         static_menu_selection.to_owned(),
         focus.to_owned(),
         stop.to_owned(),
-    ) {
+    );
+    stop.store(true, Ordering::SeqCst);
+    match result {
         Ok(_) => return Ok(()),
         Err(err) => {
             error!("{}", err);
@@ -94,6 +96,18 @@ pub fn renderer(
                     "Enter to select/toggle",
                     "Page up/down for first/last element",
                     "F5 Start/Stop",
+                    &format!(
+                        "Key count: {}",
+                        KEY_COUNT.load(Ordering::SeqCst).to_string().as_str()
+                    ),
+                    &format!(
+                        "Value count: {}",
+                        VALUE_COUNT.load(Ordering::SeqCst).to_string().as_str()
+                    ),
+                    &format!(
+                        "Results count: {}",
+                        static_menu_selection.results.lock().len()
+                    ),
                 ]
                 .iter()
                 .map(|&tip| format!("[{}] ", tip))

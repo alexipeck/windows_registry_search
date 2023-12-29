@@ -1,12 +1,9 @@
 use std::{
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
-    },
+    sync::{atomic::AtomicUsize, Arc},
     time::Duration,
 };
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use ratatui::style::Color;
 use search_editor::SearchEditor;
 use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
@@ -24,9 +21,9 @@ pub const DEBOUNCE: Duration = Duration::from_millis(100);
 pub const EVENT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 pub const SELECTION_COLOUR: Color = Color::Cyan;
 
-static KEY_COUNT: AtomicUsize = AtomicUsize::new(0);
-static VALUE_COUNT: AtomicUsize = AtomicUsize::new(0);
-static HKLM: RegKey = RegKey::predef(HKEY_LOCAL_MACHINE);
+pub static KEY_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub static VALUE_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub static HKLM: RegKey = RegKey::predef(HKEY_LOCAL_MACHINE);
 
 const REGEDIT_OUTPUT_FOR_BLANK_NAMES: bool = true;
 

@@ -1,7 +1,6 @@
 use crate::{
     root::{Root, SelectedRoots},
     search_term_tracker::SearchTermTracker,
-    worker_manager::{run, WorkerManager},
     DEBOUNCE, SELECTION_COLOUR,
 };
 use parking_lot::{Mutex, RwLock};
@@ -10,7 +9,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use std::{
-    collections::HashSet,
+    collections::BTreeSet,
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering},
         Arc,
@@ -19,7 +18,6 @@ use std::{
 };
 use strum::IntoEnumIterator;
 use tokio::sync::Notify;
-use tracing::{debug, info};
 
 pub struct StaticSelection {
     pub pane_selected: Arc<AtomicU8>,       //horizontal
@@ -37,7 +35,7 @@ pub struct StaticSelection {
     pub stop: Arc<AtomicBool>,                             //running thread resets this once closed
     pub stop_notify: Arc<Notify>,
 
-    pub results: Arc<Mutex<HashSet<String>>>,
+    pub results: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl Default for StaticSelection {
@@ -53,7 +51,7 @@ impl Default for StaticSelection {
             run_control_temporarily_disabled: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
             stop_notify: Arc::new(Notify::new()),
-            results: Arc::new(Mutex::new(HashSet::new())),
+            results: Arc::new(Mutex::new(BTreeSet::new())),
         }
     }
 }
