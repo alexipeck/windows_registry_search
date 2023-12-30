@@ -1,11 +1,10 @@
 use std::fmt;
 
 use strum::EnumIter;
-use winreg::{
-    enums::{
-        HKEY_CLASSES_ROOT, HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_USERS,
-    },
-    RegKey,
+use winreg::enums::{
+    HKEY_CLASSES_ROOT, HKEY_CURRENT_CONFIG, HKEY_CURRENT_USER, HKEY_CURRENT_USER_LOCAL_SETTINGS,
+    HKEY_DYN_DATA, HKEY_LOCAL_MACHINE, HKEY_PERFORMANCE_DATA, HKEY_PERFORMANCE_NLSTEXT,
+    HKEY_PERFORMANCE_TEXT, HKEY_USERS,
 };
 
 #[derive(EnumIter, Copy, Clone)]
@@ -59,6 +58,21 @@ impl Root {
             _ => None,
         }
     }
+    pub fn from_isize(value: isize) -> Option<Self> {
+        match value {
+            HKEY_CLASSES_ROOT => Some(Self::HkeyClassesRoot),
+            HKEY_CURRENT_USER => Some(Self::HkeyCurrentUser),
+            HKEY_LOCAL_MACHINE => Some(Self::HkeyLocalMachine),
+            HKEY_USERS => Some(Self::HkeyUsers),
+            HKEY_CURRENT_CONFIG => Some(Self::HkeyCurrentConfig),
+            HKEY_PERFORMANCE_DATA => Some(Self::HkeyPerformanceData),
+            HKEY_PERFORMANCE_TEXT => Some(Self::HkeyPerformanceText),
+            HKEY_PERFORMANCE_NLSTEXT => Some(Self::HkeyPerformanceNLSText),
+            HKEY_DYN_DATA => Some(Self::HkeyDynData),
+            HKEY_CURRENT_USER_LOCAL_SETTINGS => Some(Self::HkeyCurrentUserLocalSettings),
+            _ => None,
+        }
+    }
 }
 
 pub struct SelectedRoots {
@@ -92,23 +106,38 @@ impl Default for SelectedRoots {
 }
 
 impl SelectedRoots {
-    pub fn export_roots(&self) -> Vec<RegKey> {
+    pub fn export_roots(&self) -> Vec<isize> {
         let mut selected_roots = Vec::new();
 
         if self.classes_root {
-            selected_roots.push(RegKey::predef(HKEY_CLASSES_ROOT));
+            selected_roots.push(HKEY_CLASSES_ROOT);
         }
         if self.current_user {
-            selected_roots.push(RegKey::predef(HKEY_CURRENT_USER));
+            selected_roots.push(HKEY_CURRENT_USER);
         }
         if self.local_machine {
-            selected_roots.push(RegKey::predef(HKEY_LOCAL_MACHINE));
+            selected_roots.push(HKEY_LOCAL_MACHINE);
         }
         if self.users {
-            selected_roots.push(RegKey::predef(HKEY_USERS));
+            selected_roots.push(HKEY_USERS);
         }
         if self.current_config {
-            selected_roots.push(RegKey::predef(HKEY_CURRENT_CONFIG));
+            selected_roots.push(HKEY_CURRENT_CONFIG);
+        }
+        if self.performance_data {
+            selected_roots.push(HKEY_PERFORMANCE_DATA);
+        }
+        if self.performance_text {
+            selected_roots.push(HKEY_PERFORMANCE_TEXT);
+        }
+        if self.performance_nls_text {
+            selected_roots.push(HKEY_PERFORMANCE_NLSTEXT);
+        }
+        if self.dyn_data {
+            selected_roots.push(HKEY_DYN_DATA);
+        }
+        if self.current_user_local_settings {
+            selected_roots.push(HKEY_CURRENT_USER_LOCAL_SETTINGS);
         }
 
         selected_roots

@@ -31,6 +31,7 @@ pub struct StaticSelection {
     pub selected_roots: Arc<RwLock<SelectedRoots>>,
 
     pub running: Arc<Mutex<bool>>,
+    pub timer: Arc<RwLock<Option<(Instant, Option<Instant>)>>>,
     pub run_control_temporarily_disabled: Arc<AtomicBool>, //running thread resets this once closed
     pub stop: Arc<AtomicBool>,                             //running thread resets this once closed
     pub stop_notify: Arc<Notify>,
@@ -48,6 +49,7 @@ impl Default for StaticSelection {
             search_term_tracker: Arc::new(RwLock::new(SearchTermTracker::default())),
             selected_roots: Arc::new(RwLock::new(SelectedRoots::default())),
             running: Arc::new(Mutex::new(false)),
+            timer: Arc::new(RwLock::new(None)),
             run_control_temporarily_disabled: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
             stop_notify: Arc::new(Notify::new()),

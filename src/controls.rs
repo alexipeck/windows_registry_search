@@ -8,6 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::time::Instant;
 use tracing::{debug, error};
 
 pub fn controls(
@@ -94,6 +95,8 @@ pub fn controls(
                                     static_menu_selection.stop.store(true, Ordering::SeqCst);
                                 } else {
                                     *running_lock = true;
+                                    *static_menu_selection.timer.write() =
+                                        Some((Instant::now(), None));
                                     tx.blocking_send(()).expect("Failed to send trigger");
                                 }
                             }

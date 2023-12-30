@@ -1,6 +1,8 @@
 use tracing::{debug, info};
+use winreg::RegKey;
 
 use crate::{
+    root::Root,
     static_selection::StaticSelection,
     worker_manager::{run, WorkerManager},
     KEY_COUNT, VALUE_COUNT,
@@ -48,7 +50,27 @@ pub async fn worker_runtime(
             static_menu_selection.stop_notify.to_owned(),
         ));
 
-        worker_manager.feed_queue(vec!["Software".to_string()]);
+        let mut work = Vec::new();
+        for root in roots {
+            for key_result in RegKey::predef(root).enum_keys() {
+                KEY_COUNT.fetch_add(1, Ordering::SeqCst);
+                match key_result {
+                    Ok(key_name) => work.push((root, key_name)),
+                    Err(err) => {
+                        let root_name = match Root::from_isize(root) {
+                            Some(root) => root.to_string(),
+                            None => "InvalidRoot".into(),
+                        };
+                        let _ = worker_manager
+                            .errors
+                            .lock()
+                            .insert(format!("{}, Subkey error: \"{}\"", root_name, err));
+                    }
+                }
+            }
+        }
+
+        worker_manager.feed_queue(work);
         let start_time = Instant::now();
         run(worker_manager.to_owned()).await;
 
@@ -64,6 +86,11 @@ pub async fn worker_runtime(
         info!("Completed in {}ms.", start_time.elapsed().as_millis());
 
         static_menu_selection.stop.store(false, Ordering::SeqCst);
+        let mut timer_lock = static_menu_selection.timer.write();
+        if let Some((_, end_time)) = timer_lock.as_mut() {
+            *end_time = Some(Instant::now());
+        }
+        drop(timer_lock);
         *static_menu_selection.running.lock() = false;
         static_menu_selection
             .run_control_temporarily_disabled

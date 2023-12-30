@@ -16,7 +16,7 @@ use parking_lot::RwLock;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style, Stylize},
+    style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
@@ -93,43 +93,60 @@ pub fn renderer(
             let run_control_disabled = static_menu_selection
                 .run_control_temporarily_disabled
                 .load(Ordering::SeqCst);
-            let top_paragraph = Paragraph::new(
-                Line::from(vec![
-                    Span::raw("[H for the Help menu]"),
-                    Span::raw(" "),
-                    Span::raw("[Arrow keys for navigation]"),
-                    Span::raw(" "),
-                    Span::raw("[Enter to select/toggle]"),
-                    Span::raw(" "),
-                    Span::raw("[Page up/down for first/last element]"),
-                    Span::raw(" "),
-                    Span::raw("[F5 "),
-                    Span::styled(
-                        if running {
-                            if running && run_control_disabled {
-                                "Stopping"
-                            } else {
-                                "Stop"
-                            }
+            let top_paragraph = Paragraph::new(Line::from(vec![
+                Span::raw("[H for the Help menu]"),
+                Span::raw(" [Arrow keys for navigation]"),
+                Span::raw(" [Enter to select/toggle]"),
+                Span::raw(" [Page up/down for first/last element]"),
+                Span::raw(" [F5 "),
+                Span::styled(
+                    if running {
+                        if running && run_control_disabled {
+                            "Stopping"
                         } else {
-                            "Start"
-                        },
-                        Style::default().fg(if running && !run_control_disabled {
-                            Color::Green
-                        } else if running && run_control_disabled {
-                            Color::Red
-                        } else {
-                            Color::Green
-                        }),
-                    ),
-                    Span::raw("] "),
-                    Span::raw(format!("[Key count: {}]", KEY_COUNT.load(Ordering::SeqCst))),
-                    Span::raw(" "),
-                    Span::raw(format!("[Value count: {}]", VALUE_COUNT.load(Ordering::SeqCst))),
-                    Span::raw(" "),
-                    Span::raw(format!("[Results count: {}]", static_menu_selection.results.lock().len())),
-                ])
-            )
+                            "Stop"
+                        }
+                    } else {
+                        "Start"
+                    },
+                    Style::default().fg(if running && !run_control_disabled {
+                        Color::Green
+                    } else if running && run_control_disabled {
+                        Color::Red
+                    } else {
+                        Color::Green
+                    }),
+                ),
+                Span::raw("]"),
+                {
+                    let timer = static_menu_selection.timer.read();
+                    match timer.as_ref() {
+                        Some((start, end)) => {
+                            let t = match end.as_ref() {
+                                Some(end) => format!(
+                                    "[Last runtime: {}s]",
+                                    end.duration_since(*start).as_secs()
+                                ),
+                                None => format!("[Runtime: {}s]", start.elapsed().as_secs()),
+                            };
+                            Span::raw(t)
+                        }
+                        None => Span::raw(""),
+                    }
+                },
+                Span::raw(format!(
+                    " [Key count: {}]",
+                    KEY_COUNT.load(Ordering::SeqCst)
+                )),
+                Span::raw(format!(
+                    " [Value count: {}]",
+                    VALUE_COUNT.load(Ordering::SeqCst)
+                )),
+                Span::raw(format!(
+                    " [Results count: {}]",
+                    static_menu_selection.results.lock().len()
+                )),
+            ]))
             .block(Block::default())
             .wrap(Wrap { trim: true });
             f.render_widget(top_paragraph, chunks[0]);
@@ -160,7 +177,7 @@ pub fn renderer(
             let roots_paragraph = Paragraph::new(static_menu_selection.generate_root_list()).block(
                 Block::default()
                     .title(Span::styled(
-                        "1. Root Selection",
+                        " 1. Root Selection ",
                         Style::default().fg(Color::White),
                     ))
                     .borders(Borders::ALL)
@@ -180,7 +197,7 @@ pub fn renderer(
             .block(
                 Block::default()
                     .title(Span::styled(
-                        "2. Search Terms",
+                        " 2. Search Terms ",
                         Style::default().fg(Color::White),
                     ))
                     .borders(Borders::ALL)
@@ -198,7 +215,10 @@ pub fn renderer(
             let right_text = Text::from(static_menu_selection.generate_results());
             let right_paragraph = Paragraph::new(right_text).block(
                 Block::default()
-                    .title(Span::styled("3. Results", Style::default().fg(Color::White)))
+                    .title(Span::styled(
+                        " 3. Results ",
+                        Style::default().fg(Color::White),
+                    ))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(if pane_selected == 2 {
                         SELECTION_COLOUR
@@ -266,10 +286,10 @@ pub fn renderer(
                                     ))
                                     .style(Style::default().bg(Color::DarkGray))
                                     .borders(Borders::ALL)
-                                    .border_style(Style::default().fg(Color::White))
+                                    .border_style(Style::default().fg(Color::White)),
                             )
                         }
-                        Focus::Main => panic!(), //this case will never run
+                        Focus::Main => unreachable!(), //this case will never run
                     };
                     f.render_widget(paragraph, middle_pane);
                 }
