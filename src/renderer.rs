@@ -15,10 +15,10 @@ use crossterm::{
 use parking_lot::RwLock;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
     Terminal,
 };
 use tracing::error;
@@ -80,6 +80,8 @@ pub fn renderer(
     focus: Arc<RwLock<Focus>>,
     stop: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn Error>> {
+    let mut vertical_scroll = 0;
+
     loop {
         if stop.load(Ordering::SeqCst) {
             break;
@@ -212,23 +214,41 @@ pub fn renderer(
             f.render_widget(roots_paragraph, left_chunks[0]);
             f.render_widget(search_terms_paragraph, left_chunks[1]);
 
-            let right_text = Text::from(static_menu_selection.generate_results());
-            let right_paragraph = Paragraph::new(right_text).block(
-                Block::default()
-                    .title(Span::styled(
-                        " 3. Results ",
-                        Style::default().fg(Color::White),
-                    ))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(if pane_selected == 2 {
-                        SELECTION_COLOUR
-                    } else {
-                        Color::White
-                    })),
-            );
+            let results = static_menu_selection.generate_results();
+            let right_text = Text::from(results.clone());
+            let right_paragraph = Paragraph::new(right_text.clone())
+                .scroll((vertical_scroll as u16, 0))
+                .block(
+                    Block::default()
+                        .title(Span::styled(
+                            " 3. Results ",
+                            Style::default().fg(Color::White),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(if pane_selected == 2 {
+                            SELECTION_COLOUR
+                        } else {
+                            Color::White
+                        })),
+                );
             f.render_widget(right_paragraph, bottom_chunks[1]);
 
-            //Renders overlay
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+
+            let mut scrollbar_state = ScrollbarState::new(results.len()).position(vertical_scroll);
+
+            f.render_stateful_widget(
+                scrollbar,
+                bottom_chunks[1].inner(Margin {
+                    vertical: 1,
+                    horizontal: 0,
+                }),
+                &mut scrollbar_state,
+            );
+
+            // Renders overlay
             let focus = focus.read().to_owned();
             match focus {
                 Focus::Main => {}
@@ -289,7 +309,7 @@ pub fn renderer(
                                     .border_style(Style::default().fg(Color::White)),
                             )
                         }
-                        Focus::Main => unreachable!(), //this case will never run
+                        Focus::Main => unreachable!(), // this case will never run
                     };
                     f.render_widget(paragraph, middle_pane);
                 }
